@@ -1,0 +1,21 @@
+[project]
+name = "topk"
+version = "0.1.0"
+description = "Default template for PDM package"
+authors = [
+    {name = "", email = ""},
+]
+dependencies = [
+    "tqdm>=4.66.5",
+    "torch>=2.4.1",
+    "nnsight>=0.3.6",
+    "datasets>=3.0.1",
+    "wandb>=0.18.3",
+]
+requires-python = "==3.12.*"
+readme = "README.md"
+license = {text = "MIT"}
+
+
+[tool.pdm]
+distribution = false
