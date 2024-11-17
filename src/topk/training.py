@@ -171,7 +171,7 @@ def trainSAE(
 
 if __name__ == '__main__':
 
-    device = "cuda:1" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     model_name = "roneneldan/TinyStories-1Layer-21M" # can be any Huggingface model, "roneneldan/TinyStories-1Layer-21M", "openai-community/gpt2"
     model = nnsight.LanguageModel(model_name, device=device)
 
@@ -187,13 +187,6 @@ if __name__ == '__main__':
         dataset_path="apollo-research/roneneldan-TinyStories-tokenizer-gpt2"
         dataset = datasets.load_dataset(dataset_path)['train']
 
-    dataset = iter(
-    [
-        "This is some example data",
-        "In real life, for training a dictionary",
-        "you would need much more data than this",
-    ]
-)
     buffer = ActivationBuffer(
         data=dataset,
         model=model,
@@ -214,7 +207,6 @@ if __name__ == '__main__':
         "lm_name": model_name,
         "submodule_name": submodule.__class__.__name__,
     }
-
     # train the sparse autoencoder (SAE)
     ae = trainSAE(
         data=buffer,  # you could also use another (i.e. pytorch dataloader) here instead of buffer

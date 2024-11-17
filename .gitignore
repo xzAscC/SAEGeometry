@@ -170,3 +170,12 @@ cython_debug/
 /save_dir
 /save_dir.topk1
 /sae
+
+# nltk data
+taggers/
+
+# ipynb files
+
+out/
+es_plots/
+*.png

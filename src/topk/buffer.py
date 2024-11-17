@@ -2,7 +2,7 @@ import torch
 import nnsight
 import gc
 
-DEBUG = True
+DEBUG = False
 if DEBUG:
     tracer_kwargs = {'scan' : True, 'validate' : True}
 else:
@@ -40,7 +40,7 @@ class ActivationBuffer:
         self.activations = torch.empty(0, d_submodule, device=device)
         self.read = torch.zeros(0).bool()
 
-        self.data = iter(data)
+        self.data = data
         self.model = model
         self.submodule = submodule
         self.d_submodule = d_submodule
@@ -70,9 +70,6 @@ class ActivationBuffer:
             self.read[idxs] = True
             return self.activations[idxs]
         
-    def refresh(self):
-        pass
-
     @property
     def config(self):
         return {
@@ -98,9 +95,7 @@ class ActivationBuffer:
         if batch_size is None:
             batch_size = self.refresh_batch_size
         try:
-            return [
-                next(self.data) for _ in range(batch_size)
-            ]
+            return self.data[:batch_size]
         except StopIteration:
             raise StopIteration("End of data stream reached")
     
@@ -136,8 +131,8 @@ class ActivationBuffer:
             with torch.no_grad():
                 with self.model.trace(
                     self.text_batch(),
-                    **tracer_kwargs,
-                    invoker_args={"truncation": True, "max_length": self.ctx_len},
+                    #**tracer_kwargs,
+                    #invoker_args={"truncation": True, "max_length": self.ctx_len},
                 ):
                     if self.io == "in":
                         hidden_states = self.submodule.input[0].save()
