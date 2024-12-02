@@ -187,3 +187,8 @@ api
 
 *.html
 *.pdf
+
+# data
+
+*.npy
+*.npz
