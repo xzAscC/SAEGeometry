@@ -2,14 +2,16 @@
 name = "saegeometry"
 version = "0.1.0"
 description = ""
-authors = ["xzascc <huohuangcw@gmail.com>"]
+authors = ["xzasc <huohuangcw@gmail.com>"]
+license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.8"
-torch = "2.0.0"
+python = "^3.12"
+torch = "^2.5.1"
 pytest = "^8.3.4"
-termcolor = "2.4.0"
+numpy = "^2.2.1"
+termcolor = "^2.5.0"
 
 
 [build-system]

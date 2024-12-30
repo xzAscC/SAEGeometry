@@ -1,5 +1,7 @@
-from src import get_logger
+from src import setup_logger
+
 
 def test_get_logger():
-    logger = get_logger()
+    logger = setup_logger()
     assert logger is not None
+    logger.info("Test logger")

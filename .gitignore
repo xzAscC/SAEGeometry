@@ -199,4 +199,8 @@ api
 sae/
 artifacts/
 cache/
+config/
 wandb/
+
+# logs
+logs/
