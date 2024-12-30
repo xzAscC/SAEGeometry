@@ -197,3 +197,6 @@ api
 
 # virtual environment
 sae/
+artifacts/
+cache/
+wandb/

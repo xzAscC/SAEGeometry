@@ -2,11 +2,12 @@
 name = "saegeometry"
 version = "0.1.0"
 description = ""
-authors = ["Your Name <you@example.com>"]
+authors = ["xzascc <huohuangcw@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = "^3.8"
+torch = "2.0.0"
 
 
 [build-system]
