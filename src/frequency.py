@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--activation_path",
         type=str,
-        default="./res/freq_mean_activation",
+        default="./res/freq_mean_global.pt",
         help="Path to save the activation",
     )
     return parser.parse_args()
@@ -80,10 +80,10 @@ def obtain_activations(
 ) -> torch.Tensor:
     "output: (num_layers, num_features)"
     if activation_path:
-        if os.path.exists("freq_mean_global.pt"):
-            return torch.load("freq_mean_global.pt", weights_only=True)
+        if os.path.exists(activation_path):
+            return torch.load(activation_path, weights_only=True)
         else:
-            raise ValueError("freq_mean_global.pt not found")
+            raise ValueError("activation file not found")
     match sae_list[0].cfg.model_name:
         case "pythia-70m-deduped":
             doc_len = 0
@@ -167,14 +167,6 @@ def obtain_cos_sim(
     sae_list: torch.nn.Module, model: sae_lens.HookedSAETransformer = None
 ):
     if model:
-        cos_sim = torch.zeros(
-            len(sae_list), sae_list[0].cfg.d_sae, sae_list[0].cfg.d_sae
-        )
-        for layer in range(len(sae_list)):
-            cos_sim[layer] = get_cosine_similarity(
-                sae_list[layer].W_dec, sae_list[layer].W_dec
-            )
-    else:
         unembedding_matrix = model.unembed.W_U
         cos_sim = torch.zeros(
             len(sae_list), sae_list[0].cfg.d_sae, unembedding_matrix.shape[1]
@@ -182,6 +174,14 @@ def obtain_cos_sim(
         for layer in range(len(sae_list)):
             cos_sim[layer] = get_cosine_similarity(
                 sae_list[layer].W_dec, unembedding_matrix.T, normalized=False
+            )
+    else:
+        cos_sim = torch.zeros(
+            len(sae_list), sae_list[0].cfg.d_sae, sae_list[0].cfg.d_sae
+        )
+        for layer in range(len(sae_list)):
+            cos_sim[layer] = get_cosine_similarity(
+                sae_list[layer].W_dec, sae_list[layer].W_dec
             )
 
     return cos_sim
@@ -195,20 +195,32 @@ def plot_freq(activation: torch.Tensor):
     )
     fig.write_html("./res/freq_box.html")
 
+
 def plot_cos_sim(cos_sim: torch.Tensor):
     min_cos_sim = cos_sim.fill_diagonal_(100).min(dim=1).values.cpu().numpy()
     max_cos_sim = cos_sim.fill_diagonal_(-100).max(dim=1).values.cpu().numpy()
-    min_fig = px.box(min_cos_sim, title="Min cosine similarity", labels={"value": "Cosine similarity", "variable": "Layer"})
+    min_fig = px.box(
+        min_cos_sim,
+        title="Min cosine similarity",
+        labels={"value": "Cosine similarity", "variable": "Layer"},
+    )
     min_fig.write_html("./res/min_cos_sim_box.html")
-    max_fig = px.box(max_cos_sim, title="Max cosine similarity", labels={"value": "Cosine similarity", "variable": "Layer"})
+    max_fig = px.box(
+        max_cos_sim,
+        title="Max cosine similarity",
+        labels={"value": "Cosine similarity", "variable": "Layer"},
+    )
     max_fig.write_html("./res/max_cos_sim_box.html")
     return min_cos_sim, max_cos_sim
+
 
 if __name__ == "__main__":
     args = parse_args()
     set_seed(args.seed)
     logger = setup_logger()
     device = get_device()
+    logger.info("-" * 60)
+    logger.info(f"Start running frequency analysis")
     logger.info(f"Using device {device}")
     logger.info(f"all arguments: {args}")
     logger.info(f"step 1: Load model, data and sae to {device}")
@@ -243,3 +255,5 @@ if __name__ == "__main__":
 
     logger.info(f"Then we can save the results and see the ablation study")
     logger.info(f"step 5: use different kinds of dataset to see the difference")
+    logger.info("end of the frequency analysis")
+    logger.info("-" * 60)
