@@ -5,6 +5,7 @@ import transformer_lens
 import datasets
 import os
 from tqdm import tqdm
+from typing import Tuple
 from utils import set_seed, get_device
 from logger import setup_logger
 
@@ -19,11 +20,15 @@ def parse_args() -> argparse.Namespace:
         help="SAE model name",
         choices=["pythia-70-res", "gpt2-small-res", "get2-medium-res"],
     )
-    parser.add_argument("--activation_path", type=str, default='./freq_mean_global.pt', help="Path to save the activation")
+    parser.add_argument(
+        "--activation_path", type=str, default=None, help="Path to save the activation"
+    )
     return parser.parse_args()
 
 
-def load_sae_from_saelens(sae_name: str, device: str) -> torch.nn.Module:
+def load_sae_from_saelens(
+    sae_name: str, device: str
+) -> Tuple[torch.nn.Module, sae_lens.HookedSAETransformer, torch.utils.data.Dataset]:
     sae_list = []
     match sae_name:
         case "pythia-70-res":
@@ -31,12 +36,20 @@ def load_sae_from_saelens(sae_name: str, device: str) -> torch.nn.Module:
             release = "pythia-70m-deduped-res-sm"
             sae_id = f"blocks.0.hook_resid_pre"
             model_name = "pythia-70m-deduped"
-            sae_list.append(sae_lens.SAE.from_pretrained(release, sae_id)[0])
+            sae_list.append(
+                sae_lens.SAE.from_pretrained(
+                    release=release, sae_id=sae_id, device=device
+                )[0]
+            )
             for layer in range(layers):
                 sae_id = f"blocks.{layer}.hook_resid_post"
-                sae_list.append(sae_lens.SAE.from_pretrained(release, sae_id)[0])
+                sae_list.append(
+                    sae_lens.SAE.from_pretrained(
+                        release=release, sae_id=sae_id, device=device
+                    )[0]
+                )
 
-            model = sae_lens.HookedSAETransformer.from_pretrained(model_name)
+            model = sae_lens.HookedSAETransformer.from_pretrained(model_name).to(device)
             # TODO: add different datasets
             dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")[
                 "train"
@@ -69,7 +82,7 @@ def obtain_activations(
             freq_mean_global = 0
             layers = 6
             freqs = torch.zeros(layers + 1, sae_list[0].cfg.d_sae).to(device)
-            for idx in tqdm(range(10)):
+            for idx in tqdm(range(len(dataset))):
                 # loop begin, fuck indent
                 example = dataset[idx]
                 tokens = model.to_tokens([example["text"]], prepend_bos=True)
