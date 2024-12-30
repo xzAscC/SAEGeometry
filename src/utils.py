@@ -25,6 +25,3 @@ def get_device() -> torch.device:
     """
     # TODO: multi-gpu
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-class Logger:
-    pass
