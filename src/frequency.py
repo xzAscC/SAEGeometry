@@ -9,7 +9,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.colors as pc
 from tqdm import tqdm
-from typing import Tuple
+from typing import Tuple, List
+from logging import Logger
 from utils import set_seed, get_device
 from logger import setup_logger
 
@@ -164,13 +165,15 @@ def get_cosine_similarity(
 
 
 def obtain_cos_sim(
-    sae_list: torch.nn.Module, model: sae_lens.HookedSAETransformer = None
+    sae_list: torch.nn.Module,
+    model: sae_lens.HookedSAETransformer = None,
+    device: str = "cuda",
 ):
     if model:
         unembedding_matrix = model.unembed.W_U
         cos_sim = torch.zeros(
             len(sae_list), sae_list[0].cfg.d_sae, unembedding_matrix.shape[1]
-        )
+        ).to(device=device)
         for layer in range(len(sae_list)):
             cos_sim[layer] = get_cosine_similarity(
                 sae_list[layer].W_dec, unembedding_matrix.T, normalized=False
@@ -178,7 +181,7 @@ def obtain_cos_sim(
     else:
         cos_sim = torch.zeros(
             len(sae_list), sae_list[0].cfg.d_sae, sae_list[0].cfg.d_sae
-        )
+        ).to(device=device)
         for layer in range(len(sae_list)):
             cos_sim[layer] = get_cosine_similarity(
                 sae_list[layer].W_dec, sae_list[layer].W_dec
@@ -196,22 +199,182 @@ def plot_freq(activation: torch.Tensor):
     fig.write_html("./res/freq_box.html")
 
 
-def plot_cos_sim(cos_sim: torch.Tensor):
-    min_cos_sim = cos_sim.fill_diagonal_(100).min(dim=1).values.cpu().numpy()
-    max_cos_sim = cos_sim.fill_diagonal_(-100).max(dim=1).values.cpu().numpy()
-    min_fig = px.box(
-        min_cos_sim,
-        title="Min cosine similarity",
-        labels={"value": "Cosine similarity", "variable": "Layer"},
-    )
-    min_fig.write_html("./res/min_cos_sim_box.html")
-    max_fig = px.box(
-        max_cos_sim,
-        title="Max cosine similarity",
-        labels={"value": "Cosine similarity", "variable": "Layer"},
-    )
-    max_fig.write_html("./res/max_cos_sim_box.html")
+def plot_cos_sim(cos_sim: torch.Tensor, is_umbedding: bool = False):
+    colors = pc.n_colors("rgb(5, 200, 200)", "rgb(200, 10, 10)", 13, colortype="rgb")
+    min_cos_sim_stats = []
+    max_cos_sim_stats = []
+    for layer in range(cos_sim.shape[0]):
+        cos_sim_single_layer = cos_sim[layer]
+        min_df = pd.DataFrame(
+            {
+                "cos": cos_sim_single_layer.fill_diagonal_(100)
+                .min(dim=1)
+                .values.cpu()
+                .numpy(),
+                "layer": layer,
+            }
+        )
+        max_df = pd.DataFrame(
+            {
+                "cos": cos_sim_single_layer.fill_diagonal_(-100)
+                .max(dim=1)
+                .values.cpu()
+                .numpy(),
+                "layer": layer,
+            }
+        )
+        min_cos_sim_stats.append(min_df)
+        max_cos_sim_stats.append(max_df)
+    min_cos_sim = pd.concat(min_cos_sim_stats, axis=0)
+    max_cos_sim = pd.concat(max_cos_sim_stats, axis=0)
+    if is_umbedding:
+        max_fig = px.box(
+            max_cos_sim,
+            x="layer",
+            y="cos",
+            width=800,
+            height=600,
+            color="layer",
+            color_discrete_sequence=colors,
+            title="Max cosine similarity between the unembedding matrix and decoder weights",
+            labels={"cos": "cos", "layer": "Layer"},
+        )
+        min_fig = px.box(
+            min_cos_sim,
+            x="layer",
+            y="cos",
+            width=800,
+            height=600,
+            color="layer",
+            color_discrete_sequence=colors,
+            title="Min cosine similarity between the unembedding matrix and decoder weights",
+            labels={"cos": "cos", "layer": "Layer"},
+        )
+        min_fig.write_html("./res/min_cos_sim_unembedding_box.html")
+        max_fig.write_html("./res/max_cos_sim_unembedding_box.html")
+    else:
+        max_fig = px.box(
+            max_cos_sim,
+            x="layer",
+            y="cos",
+            width=800,
+            height=600,
+            color="layer",
+            color_discrete_sequence=colors,
+            title="Max cosine similarity between the decoder weights",
+            labels={"cos": "cos", "layer": "Layer"},
+        )
+        min_fig = px.box(
+            min_cos_sim,
+            x="layer",
+            y="cos",
+            width=800,
+            height=600,
+            color="layer",
+            color_discrete_sequence=colors,
+            title="Min cosine similarity between the decoder weights",
+            labels={"cos": "cos", "layer": "Layer"},
+        )
+        min_fig.write_html("./res/min_cos_sim_box.html")
+        max_fig.write_html("./res/max_cos_sim_box.html")
     return min_cos_sim, max_cos_sim
+
+
+def plot_freq2cos(freqs: torch.Tensor, sae_list: List[sae_lens.SAE], logger: Logger):
+    top_stats = []
+    bottom_stats = []
+    inter_stats = []
+    colors = pc.n_colors("rgb(5, 200, 200)", "rgb(200, 10, 10)", 13, colortype="rgb")
+    for layer in range(len(sae_list)):
+        freq = freqs[layer]
+        top_1_percent_values, top_1_percent_indices = torch.topk(
+            freq, int(0.1 * freq.numel()), largest=True
+        )
+        bottom_1_percent_values, bottom_1_percent_indices = torch.topk(
+            freq, int(0.1 * freq.numel()), largest=False
+        )
+        logger.info(
+            f"layer {layer} top 1% freq indices from {top_1_percent_values.max()} to {top_1_percent_values.min()}"
+        )
+        logger.info(
+            f"layer {layer} bottom 1% freq indices from {bottom_1_percent_values.max()} to {bottom_1_percent_values.min()}"
+        )
+        top_cos_sim = get_cosine_similarity(
+            sae_list[layer].W_dec[top_1_percent_indices],
+            sae_list[layer].W_dec[top_1_percent_indices],
+        )
+        bottom_cos_sim = get_cosine_similarity(
+            sae_list[layer].W_dec[bottom_1_percent_indices],
+            sae_list[layer].W_dec[bottom_1_percent_indices],
+        )
+        inter_cos_sim = get_cosine_similarity(
+            sae_list[layer].W_dec[top_1_percent_indices],
+            sae_list[layer].W_dec[bottom_1_percent_indices],
+        )
+        top_stats.append(
+            pd.DataFrame(
+                {
+                    "cos": top_cos_sim.fill_diagonal_(100).flatten().cpu().numpy(),
+                    "layer": layer,
+                }
+            )
+        )
+        bottom_stats.append(
+            pd.DataFrame(
+                {
+                    "cos": bottom_cos_sim.fill_diagonal_(100).flatten().cpu().numpy(),
+                    "layer": layer,
+                }
+            )
+        )
+        inter_stats.append(
+            pd.DataFrame(
+                {
+                    "cos": inter_cos_sim.fill_diagonal_(100).flatten().cpu().numpy(),
+                    "layer": layer,
+                }
+            )
+        )
+    top_df = pd.concat(top_stats, axis=0)
+    bottom_df = pd.concat(bottom_stats, axis=0)
+    inter_df = pd.concat(inter_stats, axis=0)
+    top_fig = px.box(
+        top_df,
+        x="layer",
+        y="cos",
+        width=800,
+        height=600,
+        color="layer",
+        color_discrete_sequence=colors,
+        title="Top 1% freq cosine similarity",
+        labels={"cos": "cos", "layer": "Layer"},
+    )
+    bottom_fig = px.box(
+        bottom_df,
+        x="layer",
+        y="cos",
+        width=800,
+        height=600,
+        color="layer",
+        color_discrete_sequence=colors,
+        title="Bottom 1% freq cosine similarity",
+        labels={"cos": "cos", "layer": "Layer"},
+    )
+    inter_fig = px.box(
+        inter_df,
+        x="layer",
+        y="cos",
+        width=800,
+        height=600,
+        color="layer",
+        color_discrete_sequence=colors,
+        title="Inter 1% freq cosine similarity",
+        labels={"cos": "cos", "layer": "Layer"},
+    )
+    top_fig.write_html("./res/top_cos_sim_box.html")
+    bottom_fig.write_html("./res/bottom_cos_sim_box.html")
+    inter_fig.write_html("./res/inter_cos_sim_box.html")
+    return top_df, bottom_df, inter_df
 
 
 if __name__ == "__main__":
@@ -237,23 +400,27 @@ if __name__ == "__main__":
     logger.info(f"obtained activations of shape {activations.shape}")
     logger.info(f"step 3: Geometry analysis")
     logger.info(f"step 3.1: vectors' cos sim in the same layer(max and min)")
-    cos_sim = obtain_cos_sim(sae_list)
-    _, _ = plot_cos_sim(cos_sim)
+
+    # cos_sim = obtain_cos_sim(sae_list)
+    # _, _ = plot_cos_sim(cos_sim)
     # TODO: pairwise in the same layer, too large to plot
     logger.info(f"step 3.2: cos sim with unembedding matrix")
-    cos_sim_unembedding = obtain_cos_sim(sae_list, model)
-    _, _ = plot_cos_sim(cos_sim_unembedding)
+    # TODO:
+    # cos_sim_unembedding = obtain_cos_sim(sae_list, model)
+    # _, _ = plot_cos_sim(cos_sim_unembedding)
     # TODO: here we do not care about the meaning, we only care about the cos sim and freq
     logger.info(f"step 4: Frequency analysis")
     logger.info(f"step 4.1: Plot avg frequency of the activation of the SAE")
-    plot_freq(activation=activations)
+    # TODO: plot_freq(activation=activations)
     logger.info(f"step 4.2: cos sim with high freq, low freq and between them")
+    plot_freq2cos(activations, sae_list, logger=logger)
     logger.info(f"step 4.3: freq of the high cos sim, low cos sim")
     logger.info(
         f"step 4.4: freq of the high cos sim, low cos sim between the unembedding matrix"
     )
 
     logger.info(f"Then we can save the results and see the ablation study")
+    # TODO
     logger.info(f"step 5: use different kinds of dataset to see the difference")
     logger.info("end of the frequency analysis")
     logger.info("-" * 60)
