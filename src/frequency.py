@@ -3,6 +3,8 @@ import argparse
 import sae_lens
 import transformer_lens
 import datasets
+import os
+from tqdm import tqdm
 from utils import set_seed, get_device
 from logger import setup_logger
 
@@ -17,11 +19,12 @@ def parse_args() -> argparse.Namespace:
         help="SAE model name",
         choices=["pythia-70-res", "gpt2-small-res", "get2-medium-res"],
     )
+    parser.add_argument("--activation_path", type=str, default='./freq_mean_global.pt', help="Path to save the activation")
     return parser.parse_args()
 
 
 def load_sae_from_saelens(sae_name: str, device: str) -> torch.nn.Module:
-    sae_list = [] 
+    sae_list = []
     match sae_name:
         case "pythia-70-res":
             layers = 6
@@ -32,18 +35,77 @@ def load_sae_from_saelens(sae_name: str, device: str) -> torch.nn.Module:
             for layer in range(layers):
                 sae_id = f"blocks.{layer}.hook_resid_post"
                 sae_list.append(sae_lens.SAE.from_pretrained(release, sae_id)[0])
-            
-            model = transformer_lens.HookedTransformer.from_pretrained(model_name)
+
+            model = sae_lens.HookedSAETransformer.from_pretrained(model_name)
             # TODO: add different datasets
-            dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")['train']
+            dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")[
+                "train"
+            ]
         case "gpt2-small-res":
             pass
         case "get2-medium-res":
             pass
         case _:
             raise ValueError(f"Invalid SAE model name: {sae_name}")
-        
+
     return sae_list, model, dataset
+
+
+def obtain_activations(
+    sae_list: torch.nn.Module,
+    model: torch.nn.Module,
+    dataset: torch.utils.data.Dataset,
+    activation_path: str = None,
+) -> torch.Tensor:
+    "output: (num_layers, num_features)"
+    if activation_path:
+        if os.path.exists("freq_mean_global.pt"):
+            return torch.load("freq_mean_global.pt")
+        else:
+            raise ValueError("freq_mean_global.pt not found")
+    match sae_list[0].cfg.model_name:
+        case "pythia-70m-deduped":
+            doc_len = 0
+            freq_mean_global = 0
+            layers = 6
+            freqs = torch.zeros(layers + 1, sae_list[0].cfg.d_sae).to(device)
+            for idx in tqdm(range(10)):
+                # loop begin, fuck indent
+                example = dataset[idx]
+                tokens = model.to_tokens([example["text"]], prepend_bos=True)
+                _, cache = model.run_with_cache_with_saes(tokens, saes=sae_list)
+                local_doc_len = cache[
+                    "blocks.0.hook_resid_post.hook_sae_acts_post"
+                ].shape[1]
+                freq = torch.zeros_like(freqs)
+                for layer in range(layers):
+                    prompt = f"blocks.{layer}.hook_resid_pre.hook_sae_acts_post"
+                    prompt2 = f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
+                    if layer == 0:
+                        freq[layer] = (cache[prompt] > 1e-3)[0].sum(0) / local_doc_len
+                    else:
+                        freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(
+                            0
+                        ) / local_doc_len
+                new_doc_len = doc_len + local_doc_len
+                if idx == 0:
+                    freq_mean_global = freq
+                else:
+                    freq_mean_global = (
+                        freq_mean_global * doc_len / new_doc_len
+                        + freq * local_doc_len / new_doc_len
+                    )
+                doc_len = new_doc_len
+                # loop end
+        case "gpt2":
+            pass
+        case _:
+            raise ValueError(f"Invalid model name: {sae_list[0].cfg.model_name}")
+
+    if os.path.exists("freq_mean_global.pt"):
+        os.remove("freq_mean_global.pt")
+    torch.save(freq_mean_global, "freq_mean_global.pt")
+    return freq_mean_global
 
 
 if __name__ == "__main__":
@@ -61,6 +123,10 @@ if __name__ == "__main__":
     logger.info(f"loaded dataset {dataset}")
 
     logger.info(f"step 2: get the activation of the SAE")
+    activations = obtain_activations(
+        sae_list, model, dataset, activation_path=args.activation_path
+    )
+    logger.info(f"obtained activations of shape {activations.shape}")
     logger.info(f"step 3: Geometry analysis")
     logger.info(f"step 3.1: vectors' cos sim in the same layer(max and min)")
     # TODO: pairwise in the same layer, too large to plot
