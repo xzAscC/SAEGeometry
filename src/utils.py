@@ -24,4 +24,4 @@ def get_device() -> torch.device:
         The device.
     """
     # TODO: multi-gpu
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return "cuda" if torch.cuda.is_available() else "cpu"
