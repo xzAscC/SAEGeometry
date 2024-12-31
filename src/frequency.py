@@ -238,6 +238,7 @@ def plot_cos_sim(
     is_umbedding: bool = False,
     model: sae_lens.HookedSAETransformer = None,
     model_name: str = None,
+    by_layer: bool = False,
 ):
     model_name = model_name
     colors = pc.n_colors("rgb(5, 200, 200)", "rgb(200, 10, 10)", 13, colortype="rgb")
@@ -246,10 +247,15 @@ def plot_cos_sim(
     for layer in range(len(sae_list)):
         if is_umbedding:
             cos_sim = get_cosine_similarity(sae_list[layer].W_dec, model.unembed.W_U.T)
+        elif by_layer:
+            cos_sim = get_cosine_similarity(
+                sae_list[layer].W_dec, sae_list[layer + 1].W_dec
+            )
         else:
             cos_sim = get_cosine_similarity(
                 sae_list[layer].W_dec, sae_list[layer].W_dec
             )
+
         min_df = pd.DataFrame(
             {
                 "cos": cos_sim.fill_diagonal_(100).min(dim=1).values.cpu().numpy(),
@@ -264,6 +270,8 @@ def plot_cos_sim(
         )
         min_cos_sim_stats.append(min_df)
         max_cos_sim_stats.append(max_df)
+        if by_layer and layer == len(sae_list) - 2:
+            break
     min_cos_sim = pd.concat(min_cos_sim_stats, axis=0)
     max_cos_sim = pd.concat(max_cos_sim_stats, axis=0)
     if is_umbedding:
@@ -275,6 +283,15 @@ def plot_cos_sim(
         )
         max_output = f"./res/{model_name}_max_cos_sim_unembedding_box.html"
         min_output = f"./res/{model_name}_min_cos_sim_unembedding_box.html"
+    elif by_layer:
+        max_title = (
+            "Max cosine similarity between the decoder weights in different layers"
+        )
+        min_title = (
+            "Min cosine similarity between the decoder weights in different layers"
+        )
+        max_output = f"./res/{model_name}_max_cos_sim_by_layer_box.html"
+        min_output = f"./res/{model_name}_min_cos_sim_by_layer_box.html"
     else:
         max_title = "Max cosine similarity between the decoder weights"
         min_title = "Min cosine similarity between the decoder weights"
@@ -589,6 +606,7 @@ def plot_cos2freq(
     bottom_fig.write_html("./res/bottom_cos2freq_box.html")
     return top_df, bottom_df
 
+
 @torch.no_grad()
 def plot_w_pca(
     saes: List[sae_lens.SAE],
@@ -601,11 +619,13 @@ def plot_w_pca(
 
     colors = pc.n_colors("rgb(5, 200, 200)", "rgb(200, 10, 10)", 6, colortype="rgb")
     labels = {str(i): f"PC {i+1}" for i in range(6)}
-    labels['color'] = 'Median Price'
+    labels["color"] = "Median Price"
     pca_stat = []
     for layer in range(6):
         pca_res = pca.fit_transform(sae_list[layer].W_dec.cpu().detach().numpy())
-        pca_stat.append(pd.DataFrame({'layer': layer, 'pc1': pca_res[:, 0], 'pc2': pca_res[:, 1]}))
+        pca_stat.append(
+            pd.DataFrame({"layer": layer, "pc1": pca_res[:, 0], "pc2": pca_res[:, 1]})
+        )
     pca_stat = pd.concat(pca_stat, axis=0)
     colors = pc.n_colors("rgb(5, 200, 200)", "rgb(200, 10, 10)", 6, colortype="rgb")
     labels = {str(i): f"PC {i+1}" for i in range(2)}
@@ -654,6 +674,10 @@ if __name__ == "__main__":
     # _, _ = plot_cos_sim(
     #    sae_list=sae_list, model=model, is_umbedding=True, model_name=args.sae_name
     # )
+    logger.info(f"step 3.3: cos sim by layer")
+    _, _ = plot_cos_sim(
+        sae_list, is_umbedding=False, model_name=args.sae_name, by_layer=True
+    )
     # TODO: here we do not care about the meaning, we only care about the cos sim and freq
     logger.info(f"step 4: Frequency analysis")
     # logger.info(f"step 4.1: Plot avg frequency of the activation of the SAE")
@@ -667,7 +691,7 @@ if __name__ == "__main__":
     # logger.info(f"Then we can save the results and see the ablation study")
     # TODO
     # logger.info(f"step 5: use different kinds of dataset to see the difference")
-    logger.info(f"step 6: PCA of the decoder weights")
-    plot_w_pca(sae_list, activations, sae_name=args.sae_name, plot_extreme=True)
+    # logger.info(f"step 6: PCA of the decoder weights")
+    # plot_w_pca(sae_list, activations, sae_name=args.sae_name, plot_extreme=True)
     logger.info("end of the frequency analysis")
     logger.info("-" * 60)
