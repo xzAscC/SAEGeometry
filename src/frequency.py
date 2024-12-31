@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="pythia-70-res",
         help="SAE model name",
-        choices=["pythia-70-res", "gpt2-small-res", "get2-medium-res"],
+        choices=["pythia-70-res", "gpt2-small-res", "get2-medium-res", 'gemma-scope-9b-pt-res-canonical'],
     )
     parser.add_argument(
         "--activation_path",
@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
 
 @torch.no_grad()
 def load_sae_from_saelens(
-    sae_name: str, device: str
+    sae_name: str, device: str='cuda'
 ) -> Tuple[torch.nn.Module, sae_lens.HookedSAETransformer, torch.utils.data.Dataset]:
     sae_list = []
     match sae_name:
@@ -60,16 +60,29 @@ def load_sae_from_saelens(
 
             model = sae_lens.HookedSAETransformer.from_pretrained(model_name).to(device)
             # TODO: add different datasets
-            dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")[
-                "train"
-            ]
+
         case "gpt2-small-res":
             pass
         case "get2-medium-res":
             pass
+        case "gemma-scope-9b-pt-res-canonical":
+            layers = 41
+            release = "gemma-scope-9b-pt-res-canonical"
+            sae_id = f"layer_{layer}/width_16k/canonical"
+            for layer in range(layers):
+                sae_list.append(
+                    sae_lens.SAE.from_pretrained(
+                        release=release, sae_id=sae_id, device=device
+                    )[0]
+                )
+                model = sae_lens.HookedSAETransformer.from_pretrained(
+                    "gemma-scope-9b-pt-res-canonical"
+                ).to(device)
+        case 'llama':
+            pass
         case _:
             raise ValueError(f"Invalid SAE model name: {sae_name}")
-
+    dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")["train"]
     return sae_list, model, dataset
 
 
@@ -314,7 +327,10 @@ def plot_freq2cos(freqs: torch.Tensor, sae_list: List[sae_lens.SAE], logger: Log
         top_stats.append(
             pd.DataFrame(
                 {
-                    "cos": top_cos_sim.fill_diagonal_(100).flatten().cpu().numpy(),
+                    "cos": top_cos_sim.fill_diagonal_(-100)
+                    .max(dim=1)
+                    .values.cpu()
+                    .numpy(),
                     "layer": layer,
                 }
             )
@@ -322,7 +338,10 @@ def plot_freq2cos(freqs: torch.Tensor, sae_list: List[sae_lens.SAE], logger: Log
         bottom_stats.append(
             pd.DataFrame(
                 {
-                    "cos": bottom_cos_sim.fill_diagonal_(100).flatten().cpu().numpy(),
+                    "cos": bottom_cos_sim.fill_diagonal_(-100)
+                    .max(dim=1)
+                    .values.cpu()
+                    .numpy(),
                     "layer": layer,
                 }
             )
@@ -330,7 +349,10 @@ def plot_freq2cos(freqs: torch.Tensor, sae_list: List[sae_lens.SAE], logger: Log
         inter_stats.append(
             pd.DataFrame(
                 {
-                    "cos": inter_cos_sim.fill_diagonal_(100).flatten().cpu().numpy(),
+                    "cos": inter_cos_sim.fill_diagonal_(-100)
+                    .max(dim=1)
+                    .values.cpu()
+                    .numpy(),
                     "layer": layer,
                 }
             )
@@ -377,6 +399,74 @@ def plot_freq2cos(freqs: torch.Tensor, sae_list: List[sae_lens.SAE], logger: Log
     return top_df, bottom_df, inter_df
 
 
+def plot_cos2freq(
+    activations: torch.Tensor, sae_list: List[sae_lens.SAE], logger: Logger
+):
+    top_stats = []
+    bottom_stats = []
+    inter_stats = []
+    colors = pc.n_colors("rgb(5, 200, 200)", "rgb(200, 10, 10)", 13, colortype="rgb")
+    for layer in range(len(sae_list)):
+        cos_sim = get_cosine_similarity(sae_list[layer].W_dec, sae_list[layer].W_dec)
+        top_1_percent_values, top_1_percent_indices = cos_sim.fill_diagonal_(-100).topk(
+            k=int(0.01 * cos_sim.shape[1]), dim=1, largest=True
+        )
+        bottom_1_percent_values, bottom_1_percent_indices = cos_sim.fill_diagonal_(
+            100
+        ).topk(k=int(0.01 * cos_sim.shape[1]), dim=1, largest=False)
+        logger.info(
+            f"layer {layer} top 1% cos sim indices from {top_1_percent_values.max()} to {top_1_percent_values.min()}"
+        )
+        logger.info(
+            f"layer {layer} bottom 1% cos sim indices from {bottom_1_percent_values.max()} to {bottom_1_percent_values.min()}"
+        )
+        top_1_percent_indices = torch.unique(top_1_percent_indices)
+        bottom_1_percent_indices = torch.unique(bottom_1_percent_indices)
+        top_stats.append(
+            pd.DataFrame(
+                {
+                    "freq": activations[layer][top_1_percent_indices].cpu().numpy(),
+                    "layer": layer,
+                }
+            )
+        )
+        bottom_stats.append(
+            pd.DataFrame(
+                {
+                    "freq": activations[layer][bottom_1_percent_indices].cpu().numpy(),
+                    "layer": layer,
+                }
+            )
+        )
+    top_df = pd.concat(top_stats, axis=0)
+    bottom_df = pd.concat(bottom_stats, axis=0)
+    top_fig = px.box(
+        top_df,
+        x="layer",
+        y="freq",
+        width=800,
+        height=600,
+        color="layer",
+        color_discrete_sequence=colors,
+        title="Top 1% cos sim's freq",
+        labels={"freq": "freq", "layer": "Layer"},
+    )
+    bottom_fig = px.box(
+        bottom_df,
+        x="layer",
+        y="freq",
+        width=800,
+        height=600,
+        color="layer",
+        color_discrete_sequence=colors,
+        title="Bottom 1% cos sim's freq",
+        labels={"freq": "freq", "layer": "Layer"},
+    )
+    top_fig.write_html("./res/top_cos2freq_box.html")
+    bottom_fig.write_html("./res/bottom_cos2freq_box.html")
+    return top_df, bottom_df
+
+
 if __name__ == "__main__":
     args = parse_args()
     set_seed(args.seed)
@@ -415,6 +505,7 @@ if __name__ == "__main__":
     logger.info(f"step 4.2: cos sim with high freq, low freq and between them")
     plot_freq2cos(activations, sae_list, logger=logger)
     logger.info(f"step 4.3: freq of the high cos sim, low cos sim")
+    # plot_cos2freq(activations, sae_list, logger=logger)
     logger.info(
         f"step 4.4: freq of the high cos sim, low cos sim between the unembedding matrix"
     )
