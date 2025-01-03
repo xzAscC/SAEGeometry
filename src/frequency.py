@@ -36,8 +36,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--activation_path",
         type=str,
-        default="./res/pythia_70m_deduped_res_sm_freq_mean_global.pt",
+        default="./res/math_pythia_70m_deduped_res_sm_freq_mean_global.pt",
         help="Path to save the activation",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="wikitext",
+        choices=["wikitext", "abstract_math"],
+        help="Path to save the frequency",
     )
     return parser.parse_args()
 
@@ -104,8 +111,17 @@ def load_sae_from_saelens(
             pass
         case _:
             raise ValueError(f"Invalid SAE model name: {sae_name}")
-
-    dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")["train"]
+    match dataset:
+        case "wikitext":
+            dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")[
+                "train"
+            ]
+        case "abstract_math":
+            dataset = ds = datasets.load_dataset("hbin0701/abstract_math")["train"][
+                "input"
+            ]
+        case _:
+            raise ValueError(f"Invalid dataset name: {dataset}")
     return sae_list, model, dataset
 
 
@@ -114,7 +130,8 @@ def obtain_activations(
     model: torch.nn.Module,
     dataset: torch.utils.data.Dataset,
     activation_path: str = None,
-    save_name: str = "gemme_freq_mean_global.pt",
+    save_name: str = "math_gemme_freq_mean_global.pt",
+    data_name: str = "abstract_math",
 ) -> torch.Tensor:
     "output: (num_layers, num_features)"
     if activation_path and os.path.exists(activation_path):
@@ -125,34 +142,63 @@ def obtain_activations(
             freq_mean_global = 0
             layers = 6
             freqs = torch.zeros(layers + 1, sae_list[0].cfg.d_sae).to(device)
-            for idx in tqdm(range(len(dataset))):
-                # loop begin, fuck indent
-                example = dataset[idx]
-                tokens = model.to_tokens([example["text"]], prepend_bos=True)
-                _, cache = model.run_with_cache_with_saes(tokens, saes=sae_list)
-                local_doc_len = cache[
-                    "blocks.0.hook_resid_post.hook_sae_acts_post"
-                ].shape[1]
-                freq = torch.zeros_like(freqs)
-                for layer in range(layers):
-                    prompt = f"blocks.{layer}.hook_resid_pre.hook_sae_acts_post"
-                    prompt2 = f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
-                    if layer == 0:
-                        freq[layer] = (cache[prompt] > 1e-3)[0].sum(0) / local_doc_len
+            if data_name == "wikitext":
+                for idx in tqdm(range(len(dataset))):
+                    # loop begin, fuck indent
+                    example = dataset[idx]
+                    tokens = model.to_tokens([example["text"]], prepend_bos=True)
+                    _, cache = model.run_with_cache_with_saes(tokens, saes=sae_list)
+                    local_doc_len = cache[
+                        "blocks.0.hook_resid_post.hook_sae_acts_post"
+                    ].shape[1]
+                    freq = torch.zeros_like(freqs)
+                    for layer in range(layers):
+                        prompt = f"blocks.{layer}.hook_resid_pre.hook_sae_acts_post"
+                        prompt2 = f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
+                        if layer == 0:
+                            freq[layer] = (cache[prompt] > 1e-3)[0].sum(0) / local_doc_len
+                        else:
+                            freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(
+                                0
+                            ) / local_doc_len
+                    new_doc_len = doc_len + local_doc_len
+                    if idx == 0:
+                        freq_mean_global = freq
                     else:
-                        freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(
-                            0
-                        ) / local_doc_len
-                new_doc_len = doc_len + local_doc_len
-                if idx == 0:
-                    freq_mean_global = freq
-                else:
-                    freq_mean_global = (
-                        freq_mean_global * doc_len / new_doc_len
-                        + freq * local_doc_len / new_doc_len
-                    )
-                doc_len = new_doc_len
-                # loop end
+                        freq_mean_global = (
+                            freq_mean_global * doc_len / new_doc_len
+                            + freq * local_doc_len / new_doc_len
+                        )
+                    doc_len = new_doc_len
+                    # loop end
+            elif data_name == "abstract_math":
+                doc_len = int(len(dataset) * 0.01)
+                for idx in tqdm(range(doc_len)):
+                    example = dataset[idx]
+                    tokens = model.to_tokens([example], prepend_bos=True)
+                    _, cache = model.run_with_cache_with_saes(tokens, saes=sae_list)
+                    local_doc_len = cache[
+                        "blocks.0.hook_resid_post.hook_sae_acts_post"
+                    ].shape[1]
+                    freq = torch.zeros_like(freqs)
+                    for layer in range(layers):
+                        prompt = f"blocks.{layer}.hook_resid_pre.hook_sae_acts_post"
+                        prompt2 = f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
+                        if layer == 0:
+                            freq[layer] = (cache[prompt] > 1e-3)[0].sum(0) / local_doc_len
+                        else:
+                            freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(
+                                0
+                            ) / local_doc_len
+                    new_doc_len = doc_len + local_doc_len
+                    if idx == 0:
+                        freq_mean_global = freq
+                    else:
+                        freq_mean_global = (
+                            freq_mean_global * doc_len / new_doc_len
+                            + freq * local_doc_len / new_doc_len
+                        )
+                    doc_len = new_doc_len
         case "gpt2":
             pass
         case "gemma-2-2b":
@@ -660,7 +706,7 @@ if __name__ == "__main__":
 
     logger.info(f"step 2: get the activation of the SAE")
     activations = obtain_activations(
-        sae_list, model, dataset, activation_path=args.activation_path
+        sae_list, model, dataset, activation_path=args.activation_path, data_name=args.dataset
     )
     logger.info(f"obtained activations of shape {activations.shape}")
     logger.info(f"step 3: Geometry analysis")
@@ -674,14 +720,14 @@ if __name__ == "__main__":
     # _, _ = plot_cos_sim(
     #    sae_list=sae_list, model=model, is_umbedding=True, model_name=args.sae_name
     # )
-    logger.info(f"step 3.3: cos sim by layer")
-    _, _ = plot_cos_sim(
-        sae_list, is_umbedding=False, model_name=args.sae_name, by_layer=True
-    )
+    #logger.info(f"step 3.3: cos sim by layer")
+    #_, _ = plot_cos_sim(
+    #    sae_list, is_umbedding=False, model_name=args.sae_name, by_layer=True
+    #)
     # TODO: here we do not care about the meaning, we only care about the cos sim and freq
-    logger.info(f"step 4: Frequency analysis")
-    # logger.info(f"step 4.1: Plot avg frequency of the activation of the SAE")
-    # plot_freq(activation=activations, model_name=args.sae_name)
+    #logger.info(f"step 4: Frequency analysis")
+    logger.info(f"step 4.1: Plot avg frequency of the activation of the SAE")
+    plot_freq(activation=activations, model_name=args.sae_name)
     # logger.info(f"step 4.2: cos sim with high freq, low freq and between them")
     # plot_freq2cos(activations, sae_list, logger=logger, model_name=args.sae_name)
     # logger.info(f"step 4.3: freq of the high cos sim, low cos sim")
