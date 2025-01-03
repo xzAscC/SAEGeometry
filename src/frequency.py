@@ -36,22 +36,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--activation_path",
         type=str,
-        default="./res/math_pythia_70m_deduped_res_sm_freq_mean_global.pt",
+        default="./res/reconstuction_math_pythia_70m_deduped_res_sm_freq_mean_global.pt",
         help="Path to save the activation",
     )
     parser.add_argument(
         "--dataset",
         type=str,
-        default="wikitext",
+        default="abstract_math",
         choices=["wikitext", "abstract_math"],
         help="Path to save the frequency",
+    )
+    parser.add_argument(
+        "--use_error_term",
+        type=bool,
+        default=True,
+        help="Whether to use the error term in the SAE",
     )
     return parser.parse_args()
 
 
 @torch.no_grad()
 def load_sae_from_saelens(
-    sae_name: str, device: str = "cuda"
+    sae_name: str, device: str = "cuda", dataset_name: str = "wikitext"
 ) -> Tuple[torch.nn.Module, sae_lens.HookedSAETransformer, torch.utils.data.Dataset]:
     sae_list = []
     match sae_name:
@@ -111,17 +117,15 @@ def load_sae_from_saelens(
             pass
         case _:
             raise ValueError(f"Invalid SAE model name: {sae_name}")
-    match dataset:
+    match dataset_name:
         case "wikitext":
             dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")[
                 "train"
             ]
         case "abstract_math":
-            dataset = ds = datasets.load_dataset("hbin0701/abstract_math")["train"][
-                "input"
-            ]
+            dataset = datasets.load_dataset("hbin0701/abstract_math")["train"]["input"]
         case _:
-            raise ValueError(f"Invalid dataset name: {dataset}")
+            raise ValueError(f"Invalid dataset name: {dataset_name}")
     return sae_list, model, dataset
 
 
@@ -129,13 +133,13 @@ def obtain_activations(
     sae_list: torch.nn.Module,
     model: torch.nn.Module,
     dataset: torch.utils.data.Dataset,
-    activation_path: str = None,
     save_name: str = "math_gemme_freq_mean_global.pt",
     data_name: str = "abstract_math",
+    args: argparse.Namespace = None,
 ) -> torch.Tensor:
     "output: (num_layers, num_features)"
-    if activation_path and os.path.exists(activation_path):
-        return torch.load(activation_path, weights_only=True)
+    if save_name and os.path.exists(save_name):
+        return torch.load(save_name, weights_only=True)
     match sae_list[0].cfg.model_name:
         case "pythia-70m-deduped":
             doc_len = 0
@@ -156,7 +160,9 @@ def obtain_activations(
                         prompt = f"blocks.{layer}.hook_resid_pre.hook_sae_acts_post"
                         prompt2 = f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
                         if layer == 0:
-                            freq[layer] = (cache[prompt] > 1e-3)[0].sum(0) / local_doc_len
+                            freq[layer] = (cache[prompt] > 1e-3)[0].sum(
+                                0
+                            ) / local_doc_len
                         else:
                             freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(
                                 0
@@ -176,7 +182,12 @@ def obtain_activations(
                 for idx in tqdm(range(doc_len)):
                     example = dataset[idx]
                     tokens = model.to_tokens([example], prepend_bos=True)
-                    _, cache = model.run_with_cache_with_saes(tokens, saes=sae_list)
+                    if args.use_error_term:
+                        _, cache = model.run_with_cache_with_saes(
+                            tokens, saes=sae_list, use_error_term=True
+                        )
+                    else:
+                        _, cache = model.run_with_cache_with_saes(tokens, saes=sae_list)
                     local_doc_len = cache[
                         "blocks.0.hook_resid_post.hook_sae_acts_post"
                     ].shape[1]
@@ -185,7 +196,9 @@ def obtain_activations(
                         prompt = f"blocks.{layer}.hook_resid_pre.hook_sae_acts_post"
                         prompt2 = f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
                         if layer == 0:
-                            freq[layer] = (cache[prompt] > 1e-3)[0].sum(0) / local_doc_len
+                            freq[layer] = (cache[prompt] > 1e-3)[0].sum(
+                                0
+                            ) / local_doc_len
                         else:
                             freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(
                                 0
@@ -270,13 +283,13 @@ def get_cosine_similarity(
     return cosine_sim
 
 
-def plot_freq(activation: torch.Tensor, model_name: str = None):
+def plot_freq(activation: torch.Tensor, model_name: str = None, data_name: str = None):
     fig = px.box(
         activation.T.cpu().numpy(),
         title="Frequency of activations with extreme low frequency in the model",
         labels={"value": "Frequency", "variable": "Layer"},
     )
-    fig.write_html(f"./res/{model_name}_freq_w_zero.html")
+    fig.write_html(f"./res/{data_name}_{model_name}_freq_w_zero.html")
 
 
 def plot_cos_sim(
@@ -377,6 +390,7 @@ def plot_freq2cos(
     model_name: str = None,
     is_umbedding: bool = False,
     model: sae_lens.HookedSAETransformer = None,
+    dataset_name: str = None,
 ):
     top_stats = []
     bottom_stats = []
@@ -387,12 +401,20 @@ def plot_freq2cos(
     colors = pc.n_colors("rgb(5, 200, 200)", "rgb(200, 10, 10)", 13, colortype="rgb")
     for layer in range(len(sae_list)):
         freq = freqs[layer]
-        top_1_percent_values, top_1_percent_indices = torch.topk(
-            freq, int(0.1 * freq.numel()), largest=True
-        )
-        bottom_1_percent_values, bottom_1_percent_indices = torch.topk(
-            freq, int(0.1 * freq.numel()), largest=False
-        )
+        if dataset_name == "wikitext":
+            top_1_percent_values, top_1_percent_indices = torch.topk(
+                freq, int(0.1 * freq.numel()), largest=True
+            )
+            bottom_1_percent_values, bottom_1_percent_indices = torch.topk(
+                freq, int(0.1 * freq.numel()), largest=False
+            )
+        else:
+            top_1_percent_values, top_1_percent_indices = torch.topk(
+                freq, int(0.01 * freq.numel()), largest=True
+            )
+            bottom_1_percent_values, bottom_1_percent_indices = torch.topk(
+                freq, int(0.01 * freq.numel()), largest=False
+            )
 
         logger.info(
             f"layer {layer} top 1% freq indices from {top_1_percent_values.max()} to {top_1_percent_values.min()}"
@@ -566,22 +588,36 @@ def plot_freq2cos(
     )
     if is_umbedding:
         top_min_fig.write_html(
-            f"./res/{model_name}_top_min_unembedding_cos_sim_box.html"
+            f"./res/{dataset_name}_{model_name}_top_min_unembedding_cos_sim_box.html"
         )
         bottom_min_fig.write_html(
-            f"./res/{model_name}_bottom_min_unembedding_cos_sim_box.html"
+            f"./res/{dataset_name}_{model_name}_bottom_min_unembedding_cos_sim_box.html"
         )
         # inter_min_fig.write_html(f"./res/{model_name}_inter_min_unembedding_cos_sim_box.html")
-        top_fig.write_html(f"./res/{model_name}_top_unembedding_cos_sim_box.html")
-        bottom_fig.write_html(f"./res/{model_name}_bottom_unembedding_cos_sim_box.html")
+        top_fig.write_html(
+            f"./res/{dataset_name}_{model_name}_top_unembedding_cos_sim_box.html"
+        )
+        bottom_fig.write_html(
+            f"./res/{dataset_name}_{model_name}_bottom_unembedding_cos_sim_box.html"
+        )
         # inter_fig.write_html(f"./res/{model_name}_inter_unembedding_cos_sim_box.html")
     else:
-        top_min_fig.write_html(f"./res/{model_name}_top_min_cos_sim_box.html")
-        bottom_min_fig.write_html(f"./res/{model_name}_bottom_min_cos_sim_box.html")
-        inter_min_fig.write_html(f"./res/{model_name}_inter_min_cos_sim_box.html")
-        top_fig.write_html(f"./res/{model_name}_top_cos_sim_box.html")
-        bottom_fig.write_html(f"./res/{model_name}_bottom_cos_sim_box.html")
-        inter_fig.write_html(f"./res/{model_name}_inter_cos_sim_box.html")
+        top_min_fig.write_html(
+            f"./res/{dataset_name}_{model_name}_top_min_cos_sim_box.html"
+        )
+        bottom_min_fig.write_html(
+            f"./res/{dataset_name}_{model_name}_bottom_min_cos_sim_box.html"
+        )
+        inter_min_fig.write_html(
+            f"./res/{dataset_name}_{model_name}_inter_min_cos_sim_box.html"
+        )
+        top_fig.write_html(f"./res/{dataset_name}_{model_name}_top_cos_sim_box.html")
+        bottom_fig.write_html(
+            f"./res/{dataset_name}_{model_name}_bottom_cos_sim_box.html"
+        )
+        inter_fig.write_html(
+            f"./res/{dataset_name}_{model_name}_inter_cos_sim_box.html"
+        )
     return top_df, bottom_df, inter_df
 
 
@@ -688,6 +724,81 @@ def plot_w_pca(
     fig.show()
 
 
+def plot_freq_diff(activation_path):
+    error = "./res/reconstuction_math_pythia_70m_deduped_res_sm_freq_mean_global.pt"
+    non_error = "./res/abstract_math_pythia-70m-deduped-res-sm_abl_freq_mean_global_extreme.pt"
+    activations = torch.load(non_error, weights_only=True)
+    err_activations = torch.load(error, weights_only=True)
+    freq_diff = activations - err_activations
+    fig = px.box(
+        freq_diff.T.cpu().numpy(),
+        title="Frequency difference between the error term and the non-error term",
+        labels={"value": "Frequency", "variable": "Layer"},
+    )
+    fig.write_html(f"./res/freq_diff_math_abl_3_low_freq.html")
+
+@torch.no_grad()    
+def ablation_extreme_freq(
+    activation: torch.Tensor,
+    model_name: str,
+    data_name: str,
+    dataset: torch.utils.data.Dataset,
+    sae_list: List[sae_lens.SAE],
+    largest: bool = True,
+    percent: float = 1,
+):
+    if largest:
+        _, extreme_freq_indices = torch.topk(
+            activation, int(percent * activation.numel()//7), largest=True
+        )
+        print(extreme_freq_indices.shape)
+    else:
+        _, extreme_freq_indices = torch.topk(
+            activation, int(percent * activation.numel()//7), largest=False
+        )
+    for idx in range(len(sae_list)):
+        print(sae_list[idx].W_dec.nonzero().shape)
+        sae_list[idx].W_dec.requires_grad = False
+        list(map(lambda idy: sae_list[idx].W_dec[idy, :].zero_(), extreme_freq_indices[0]))
+        print(sae_list[idx].W_dec.nonzero().shape)
+    doc_len = 0
+    freq_mean_global = 0
+    layers = 6
+    freqs = torch.zeros(layers + 1, sae_list[0].cfg.d_sae).to(device)
+    doc_len = int(len(dataset) * 0.01)
+    for idx in tqdm(range(doc_len)):
+        example = dataset[idx]
+        tokens = model.to_tokens([example], prepend_bos=True)
+        _, cache = model.run_with_cache_with_saes(
+            tokens, saes=sae_list, use_error_term=True
+        )
+        local_doc_len = cache["blocks.0.hook_resid_post.hook_sae_acts_post"].shape[
+            1
+        ]
+        freq = torch.zeros_like(freqs)
+        for layer in range(layers):
+            prompt = f"blocks.{layer}.hook_resid_pre.hook_sae_acts_post"
+            prompt2 = f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
+            if layer == 0:
+                freq[layer] = (cache[prompt] > 1e-3)[0].sum(0) / local_doc_len
+            else:
+                freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(0) / local_doc_len
+        new_doc_len = doc_len + local_doc_len
+        if idx == 0:
+            freq_mean_global = freq
+        else:
+            freq_mean_global = (
+                freq_mean_global * doc_len / new_doc_len
+                + freq * local_doc_len / new_doc_len
+            )
+        doc_len = new_doc_len
+    torch.save(
+        freq_mean_global,
+        f"./res/{data_name}_{model_name}_abl_freq_mean_global_extreme.pt",
+    )
+    return freq_mean_global
+
+
 if __name__ == "__main__":
     args = parse_args()
     set_seed(args.seed)
@@ -699,14 +810,21 @@ if __name__ == "__main__":
     logger.info(f"all arguments: {args}")
     logger.info(f"step 1: Load model, data and sae to {device}")
 
-    sae_list, model, dataset = load_sae_from_saelens(args.sae_name, device)
+    sae_list, model, dataset = load_sae_from_saelens(
+        args.sae_name, device, args.dataset
+    )
     logger.info(f"loaded {len(sae_list)} saes from {args.sae_name}")
     logger.info(f"loaded model {model}")
-    logger.info(f"loaded dataset {dataset}")
+    logger.info(f"loaded dataset {args.dataset}")
 
     logger.info(f"step 2: get the activation of the SAE")
     activations = obtain_activations(
-        sae_list, model, dataset, activation_path=args.activation_path, data_name=args.dataset
+        sae_list,
+        model,
+        dataset,
+        save_name=args.activation_path,
+        data_name=args.dataset,
+        args=args,
     )
     logger.info(f"obtained activations of shape {activations.shape}")
     logger.info(f"step 3: Geometry analysis")
@@ -720,24 +838,37 @@ if __name__ == "__main__":
     # _, _ = plot_cos_sim(
     #    sae_list=sae_list, model=model, is_umbedding=True, model_name=args.sae_name
     # )
-    #logger.info(f"step 3.3: cos sim by layer")
-    #_, _ = plot_cos_sim(
+    # logger.info(f"step 3.3: cos sim by layer")
+    # _, _ = plot_cos_sim(
     #    sae_list, is_umbedding=False, model_name=args.sae_name, by_layer=True
-    #)
+    # )
     # TODO: here we do not care about the meaning, we only care about the cos sim and freq
-    #logger.info(f"step 4: Frequency analysis")
+    # logger.info(f"step 4: Frequency analysis")
     logger.info(f"step 4.1: Plot avg frequency of the activation of the SAE")
-    plot_freq(activation=activations, model_name=args.sae_name)
+    # plot_freq(activation=activations, savemodel_name=args.sae_name, data_name=args.dataset, err=args.use_error_term)
     # logger.info(f"step 4.2: cos sim with high freq, low freq and between them")
-    # plot_freq2cos(activations, sae_list, logger=logger, model_name=args.sae_name)
+    # plot_freq2cos(activations, sae_list, logger=logger, model_name=args.sae_name, dataset_name=args.dataset)
     # logger.info(f"step 4.3: freq of the high cos sim, low cos sim")
     # plot_cos2freq(activations, sae_list, logger=logger)
     # logger.info(f"step 4.4: freq of the high cos sim, low cos sim between the unembedding matrix")
     # plot_freq2cos(activations, sae_list, logger=logger, model_name=args.sae_name, is_umbedding=True, model=model)
     # logger.info(f"Then we can save the results and see the ablation study")
-    # TODO
-    # logger.info(f"step 5: use different kinds of dataset to see the difference")
-    # logger.info(f"step 6: PCA of the decoder weights")
+    logger.info(f"step 5: ablation study")
+    #logger.info(
+    #    f"step 5.1: freq difference between the error term and the non-error term"
+    #)
+    #plot_freq_diff(activation_path=args.activation_path)
+    logger.info(f"step 5.2: ablation of the extreme freq")
+    ablation_extreme_freq(
+        activation=activations,
+        model_name=args.sae_name,
+        data_name=args.dataset,
+        dataset=dataset,
+        sae_list=sae_list,
+        largest=True,
+    )
+    plot_freq_diff(activation_path=args.activation_path)
+    # logger.info(f"step 5: PCA of the decoder weights")
     # plot_w_pca(sae_list, activations, sae_name=args.sae_name, plot_extreme=True)
     logger.info("end of the frequency analysis")
     logger.info("-" * 60)
