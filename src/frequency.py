@@ -868,16 +868,16 @@ if __name__ == "__main__":
     #    f"step 5.1: freq difference between the error term and the non-error term"
     #)
     #plot_freq_diff(activation_path=args.activation_path)
-    logger.info(f"step 5.2: ablation of the extreme freq")
-    ablation_extreme_freq(
-        activation=activations,
-        model_name=args.sae_name,
-        data_name=args.dataset,
-        dataset=dataset,
-        sae_list=sae_list,
-        largest=True,
-    )
-    plot_freq_diff(activation_path=args.activation_path)
+    # logger.info(f"step 5.2: ablation of the extreme freq")
+    # ablation_extreme_freq(
+    #     activation=activations,
+    #     model_name=args.sae_name,
+    #     data_name=args.dataset,
+    #     dataset=dataset,
+    #     sae_list=sae_list,
+    #     largest=True,
+    # )
+    # plot_freq_diff(activation_path=args.activation_path)
     # logger.info(f"step 5: PCA of the decoder weights")
     # plot_w_pca(sae_list, activations, sae_name=args.sae_name, plot_extreme=True)
     logger.info("end of the frequency analysis")
