@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--activation_path",
         type=str,
-        default="./res/reconstuction_math_pythia_70m_deduped_res_sm_freq_mean_global.pt",
+        default="./res/tmp.pt",
         help="Path to save the activation",
     )
     parser.add_argument(
@@ -133,7 +133,7 @@ def obtain_activations(
     sae_list: torch.nn.Module,
     model: torch.nn.Module,
     dataset: torch.utils.data.Dataset,
-    save_name: str = "math_gemme_freq_mean_global.pt",
+    save_name: str = "tmp.pt",
     data_name: str = "abstract_math",
     args: argparse.Namespace = None,
 ) -> torch.Tensor:
