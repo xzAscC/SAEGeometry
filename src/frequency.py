@@ -163,10 +163,7 @@ def obtain_activations(
                             freq[layer] = (cache[prompt] > 1e-3)[0].sum(
                                 0
                             ) / local_doc_len
-                        else:
-                            freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(
-                                0
-                            ) / local_doc_len
+                        freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(0) / local_doc_len
                     new_doc_len = doc_len + local_doc_len
                     if idx == 0:
                         freq_mean_global = freq
