@@ -36,7 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--activation_path",
         type=str,
-        default="./res/reconstuction_math_pythia_70m_deduped_res_sm_freq_mean_global.pt",
+        default="./res/tmp.pt",
         help="Path to save the activation",
     )
     parser.add_argument(
@@ -133,7 +133,7 @@ def obtain_activations(
     sae_list: torch.nn.Module,
     model: torch.nn.Module,
     dataset: torch.utils.data.Dataset,
-    save_name: str = "math_gemme_freq_mean_global.pt",
+    save_name: str = "tmp.pt",
     data_name: str = "abstract_math",
     args: argparse.Namespace = None,
 ) -> torch.Tensor:
@@ -163,10 +163,7 @@ def obtain_activations(
                             freq[layer] = (cache[prompt] > 1e-3)[0].sum(
                                 0
                             ) / local_doc_len
-                        else:
-                            freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(
-                                0
-                            ) / local_doc_len
+                        freq[layer + 1] = (cache[prompt2] > 1e-3)[0].sum(0) / local_doc_len
                     new_doc_len = doc_len + local_doc_len
                     if idx == 0:
                         freq_mean_global = freq
@@ -691,20 +688,31 @@ def plot_cos2freq(
 
 @torch.no_grad()
 def plot_w_pca(
-    saes: List[sae_lens.SAE],
+    sae_list: List[sae_lens.SAE],
     acts: torch.Tensor,
     sae_name: str,
     plot_extreme: bool = False,
+    percent: float = 1e-4,
+    largest: bool = True,
 ):
     # TODO: a trivil draw, no need to plot because pca is not useful for the decoder weights
+    if largest:
+        _, extreme_freq_indices = torch.topk(
+            acts, int(percent * acts.numel()//7), largest=True
+        )
+    else:
+        _, extreme_freq_indices = torch.topk(
+            acts, int(percent * acts.numel()//7), largest=False
+        )       
+
     pca = sklearn.decomposition.PCA(n_components=256)
 
     colors = pc.n_colors("rgb(5, 200, 200)", "rgb(200, 10, 10)", 6, colortype="rgb")
-    labels = {str(i): f"PC {i+1}" for i in range(6)}
+    labels = {str(i): f"PC {i+1}" for i in range(2)}
     labels["color"] = "Median Price"
     pca_stat = []
     for layer in range(6):
-        pca_res = pca.fit_transform(sae_list[layer].W_dec.cpu().detach().numpy())
+        pca_res = pca.fit_transform(sae_list[layer].W_dec[extreme_freq_indices[layer], :].cpu().detach().numpy())
         pca_stat.append(
             pd.DataFrame({"layer": layer, "pc1": pca_res[:, 0], "pc2": pca_res[:, 1]})
         )
@@ -735,7 +743,7 @@ def plot_freq_diff(activation_path):
         title="Frequency difference between the error term and the non-error term",
         labels={"value": "Frequency", "variable": "Layer"},
     )
-    fig.write_html(f"./res/freq_diff_math_abl_3_low_freq.html")
+    fig.write_html(f"./res/tmp_freq_diff_math_abl_3_low_freq.html")
 
 @torch.no_grad()    
 def ablation_extreme_freq(
@@ -760,12 +768,14 @@ def ablation_extreme_freq(
         print(sae_list[idx].W_dec.nonzero().shape)
         sae_list[idx].W_dec.requires_grad = False
         list(map(lambda idy: sae_list[idx].W_dec[idy, :].zero_(), extreme_freq_indices[0]))
-        print(sae_list[idx].W_dec.nonzero().shape)
     doc_len = 0
     freq_mean_global = 0
     layers = 6
     freqs = torch.zeros(layers + 1, sae_list[0].cfg.d_sae).to(device)
     doc_len = int(len(dataset) * 0.01)
+    idx = 5
+    print(sae_list[idx].W_dec.nonzero().shape)
+
     for idx in tqdm(range(doc_len)):
         example = dataset[idx]
         tokens = model.to_tokens([example], prepend_bos=True)
@@ -858,16 +868,16 @@ if __name__ == "__main__":
     #    f"step 5.1: freq difference between the error term and the non-error term"
     #)
     #plot_freq_diff(activation_path=args.activation_path)
-    logger.info(f"step 5.2: ablation of the extreme freq")
-    ablation_extreme_freq(
-        activation=activations,
-        model_name=args.sae_name,
-        data_name=args.dataset,
-        dataset=dataset,
-        sae_list=sae_list,
-        largest=True,
-    )
-    plot_freq_diff(activation_path=args.activation_path)
+    # logger.info(f"step 5.2: ablation of the extreme freq")
+    # ablation_extreme_freq(
+    #     activation=activations,
+    #     model_name=args.sae_name,
+    #     data_name=args.dataset,
+    #     dataset=dataset,
+    #     sae_list=sae_list,
+    #     largest=True,
+    # )
+    # plot_freq_diff(activation_path=args.activation_path)
     # logger.info(f"step 5: PCA of the decoder weights")
     # plot_w_pca(sae_list, activations, sae_name=args.sae_name, plot_extreme=True)
     logger.info("end of the frequency analysis")
