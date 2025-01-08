@@ -828,20 +828,13 @@ if __name__ == "__main__":
     logger.info(f"loaded dataset {args.dataset}")
 
     logger.info(f"step 2: get the activation of the SAE")
-    activations = obtain_activations(
-        sae_list,
-        model,
-        dataset,
-        save_name=args.activation_path,
-        data_name=args.dataset,
-        args=args,
-    )
+    activations = torch.load('./src/math_pythia_res_post.pt')
     logger.info(f"obtained activations of shape {activations.shape}")
     logger.info(f"step 3: Geometry analysis")
     # logger.info(f"step 3.1: vectors' cos sim in the same layer(max and min)")
 
     # cos_sim = obtain_cos_sim(sae_list)
-    # _, _ = plot_cos_sim(sae_list, is_umbedding=False, model_name=args.sae_name)
+    _, _ = plot_cos_sim(sae_list, is_umbedding=False, model_name=args.sae_name)
     # TODO: pairwise in the same layer, too large to plot
     # logger.info(f"step 3.2: cos sim with unembedding matrix")
 
@@ -855,9 +848,9 @@ if __name__ == "__main__":
     # TODO: here we do not care about the meaning, we only care about the cos sim and freq
     # logger.info(f"step 4: Frequency analysis")
     logger.info(f"step 4.1: Plot avg frequency of the activation of the SAE")
-    # plot_freq(activation=activations, savemodel_name=args.sae_name, data_name=args.dataset, err=args.use_error_term)
+    plot_freq(activation=activations, data_name=args.dataset, err=args.use_error_term)
     # logger.info(f"step 4.2: cos sim with high freq, low freq and between them")
-    # plot_freq2cos(activations, sae_list, logger=logger, model_name=args.sae_name, dataset_name=args.dataset)
+    plot_freq2cos(activations, sae_list, logger=logger, model_name=args.sae_name, dataset_name=args.dataset)
     # logger.info(f"step 4.3: freq of the high cos sim, low cos sim")
     # plot_cos2freq(activations, sae_list, logger=logger)
     # logger.info(f"step 4.4: freq of the high cos sim, low cos sim between the unembedding matrix")
