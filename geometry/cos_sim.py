@@ -62,7 +62,7 @@ def set_seed(seed: int) -> None:
 
 
 def obtain_data() -> (
-    Tuple[List[sae_lens.SAE], torch.nn.Module, torch.utils.data.Dataset]
+    Tuple[List[sae_lens.SAE], torch.nn.Module, List[torch.utils.data.Dataset]]
 ):
     """
     load sae, model and dataset
@@ -81,13 +81,16 @@ def obtain_data() -> (
         )
 
     model = sae_lens.HookedSAETransformer.from_pretrained(model_name)
-    ds = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")["train"]
+    ds = [datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")["train"]]
 
     return saes, model, ds
 
 
 def plot_cosine_similarity(
-    saes: List[sae_lens.SAE], model: torch.nn.ModuleList, is_umbedding: bool = False
+    saes: List[sae_lens.SAE],
+    model: torch.nn.ModuleList,
+    is_umbedding: bool = False,
+    self: bool = False,
 ) -> None:
     # Get the cosine similarity between the dictionary elements
     colors = pc.n_colors("rgb(5, 200, 200)", "rgb(200, 10, 10)", 13, colortype="rgb")
@@ -96,8 +99,10 @@ def plot_cosine_similarity(
     for layer in range(len(saes)):
         if is_umbedding:
             cos_sim = get_cosine_similarity(saes[layer].W_dec, model.unembed.W_U.T)
-        else:
+        elif self:
             cos_sim = get_cosine_similarity(saes[layer].W_dec, saes[layer].W_dec)
+        else:
+            cos_sim = get_cosine_similarity(saes[layer].W_dec, saes[layer + 1].W_dec)
 
         min_df = pd.DataFrame(
             {
@@ -113,6 +118,9 @@ def plot_cosine_similarity(
         )
         min_cos_sim_stats.append(min_df)
         max_cos_sim_stats.append(max_df)
+
+        if not is_umbedding and not self and layer == len(saes) - 2:
+            break
     if is_umbedding:
         max_fig = sns.boxplot(
             data=pd.concat(max_cos_sim_stats, axis=0),
@@ -125,7 +133,7 @@ def plot_cosine_similarity(
             y="cos",
         )
         min_fig.get_figure().savefig("./res/cos_sim/vector_unembed_cs.pdf")
-    else:
+    elif self:
         # max_fig = px.box(
         #     pd.concat(max_cos_sim_stats, axis=0),
         #     x="layer",
@@ -155,10 +163,26 @@ def plot_cosine_similarity(
             y="cos",
         )
         min_fig.get_figure().savefig("./res/cos_sim/vector_vector_cs.pdf")
+    else:
+        max_fig = sns.boxplot(
+            data=pd.concat(max_cos_sim_stats, axis=0),
+            x="layer",
+            y="cos",
+        )
+        min_fig = sns.boxplot(
+            data=pd.concat(min_cos_sim_stats, axis=0),
+            x="layer",
+            y="cos",
+        )
+        min_fig.set_xlabel("Layer", fontsize=14)
+        min_fig.set_ylabel("Cosine Similarity", fontsize=13)
+        min_fig.tick_params(axis="both", which="major", labelsize=12)
+        min_fig.get_figure().savefig("./res/cos_sim/vector_nvector_cs.pdf")
     return None
 
 
 if __name__ == "__main__":
     set_seed(42)
     saes, model, ds = obtain_data()
-    plot_cosine_similarity(saes, model, is_umbedding=False)
+    plot_cosine_similarity(saes, model, is_umbedding=False, self=False)
+    acts = obtain_activations(saes, model, ds)
