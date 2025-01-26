@@ -30,9 +30,9 @@ def config():
     parser.add_argument(
         "--model_name",
         type=str,
-        default='pythia',
+        default="pythia",
         help="The model name.",
-        choices=["gemma2", "llama3", 'pythia'],
+        choices=["gemma2", "llama3", "pythia"],
     )
     args = parser.parse_args()
     return args
@@ -46,17 +46,14 @@ def obtain_pythia_data(
     """
 
     release = "pythia-70m-deduped-res-sm"
-    
+
     model_name = "EleutherAI/pythia-70m-deduped"
     saes = []
     for layer in tqdm(range(layers)):
         sae_id = f"blocks.{layer}.hook_resid_post"
         sae = sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
-        sae.to(dtype=torch.bfloat16)
         saes.append(sae)
-    model = sae_lens.HookedSAETransformer.from_pretrained(
-        model_name, dtype=torch.bfloat16
-    )
+    model = sae_lens.HookedSAETransformer.from_pretrained(model_name)
     return saes, model
 
 
@@ -107,8 +104,8 @@ def obtain_acts(
     """
     Obtain activations from the model.
     """
-    # ds = ["wiki", "code", "math"]
-    ds = ["wiki"]
+    ds = ["wiki", "code", "math"]
+    # ds = ["math"]
     for idx in range(len(ds)):
         data_name = ds[idx]
         if data_name == "wiki":
@@ -177,11 +174,14 @@ if __name__ == "__main__":
     set_seed(args.seed)
     if args.model_name == "gemma2":
         saes, model = obtain_gemma_data()
+        layers = 26
     elif args.model_name == "llama3":
         saes, model = obtain_llama_data()
+        layers = 32
     else:
         saes, model = obtain_pythia_data()
+        layers = 6
     # saes, model = obtain_gemma_data()
     # saes, model = obtain_llama_data()
     torch.cuda.empty_cache()
-    acts = obtain_acts(saes, model, model_name=args.model_name)
+    acts = obtain_acts(saes, model, layers, model_name=args.model_name)
