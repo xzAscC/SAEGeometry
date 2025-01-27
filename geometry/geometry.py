@@ -5,6 +5,7 @@ import argparse
 import random
 import jaxtyping
 import warnings
+import copy
 import pandas as pd
 import numpy as np
 import os.path as osp
@@ -38,9 +39,15 @@ def config():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="llama3",
+        default="gemma2",
         help="The model name.",
         choices=["gemma2", "llama3", "pythia"],
+    )
+    parser.add_argument(
+        "--use_error_term",
+        type=bool,
+        default=True,
+        help="Whether to use the error term.",
     )
     args = parser.parse_args()
     return args
@@ -54,7 +61,6 @@ def obtain_pythia_data(
     """
 
     release = "pythia-70m-deduped-res-sm"
-
     model_name = "EleutherAI/pythia-70m-deduped"
     saes = []
     for layer in tqdm(range(layers)):
@@ -1206,23 +1212,28 @@ def plot_freq2cs_lineplot(
                 wc_cs,
                 overall_cs,
             ]
-        ):  
+        ):
             if max_cs:
                 stats[idx].append(
-                    float(cs.fill_diagonal_(-100).max(1).values.mean().to(torch.float32))
+                    float(
+                        cs.fill_diagonal_(-100).max(1).values.mean().to(torch.float32)
+                    )
                 )
             else:
                 stats[idx].append(
-                    float(cs.fill_diagonal_(0).abs().sum().to(torch.float32) / (cs.shape[0] * (cs.shape[1] - 1)))
+                    float(
+                        cs.fill_diagonal_(0).abs().sum().to(torch.float32)
+                        / (cs.shape[0] * (cs.shape[1] - 1))
+                    )
                 )
-    
+
     stat_list_df = []
     for idx, stat in enumerate(stats):
         stat_df = pd.DataFrame(
             {
                 "cos": stat,
                 "layer": list(range(1, layers + 1)),
-                "line_name": [line_name[idx]] * layers
+                "line_name": [line_name[idx]] * layers,
             }
         )
         stat_list_df.append(stat_df)
@@ -1271,22 +1282,217 @@ def plot_basic_geometry(
     return None
 
 
+@torch.no_grad()
+def ablation_decoder(
+    acts: torch.Tensor,
+    model: sae_lens.HookedSAETransformer,
+    model_name: str = "gemma2",
+    ds: List = ["wiki", "code", "math"],
+    use_error_term: bool = False,
+) -> None:
+    """
+    1. load data
+    2. ablate sae
+    3. run model to see its influence on output and next layer
+    """
+    # 1. load data
+    for data_name in ds:
+        if data_name == "wiki":
+            dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")[
+                "train"
+            ]
+            text = "text"
+            if model_name == "gemma2":
+                ds_ratio = 0.5
+            elif model_name == "llama3":
+                ds_ratio = 0.05
+            else:
+                ds_ratio = 1
+        elif data_name == "code":
+            dataset = datasets.load_dataset("b-mc2/sql-create-context")["train"]
+            text = "answer"
+            if model_name == "gemma2":
+                ds_ratio = 0.5
+            elif model_name == "llama3":
+                ds_ratio = 0.05
+            else:
+                ds_ratio = 1
+        elif data_name == "math":
+            dataset = datasets.load_dataset("TIGER-Lab/MathInstruct")["train"]
+            text = "output"
+            if model_name == "gemma2":
+                ds_ratio = 0.1
+            elif model_name == "llama3":
+                ds_ratio = 0.01
+            else:
+                ds_ratio = 1
+        # 2. ablate sae
+        layers, _, _ = name2lrc(model_name)
+        top_num = acts[0].shape[1] // 10
+        abl_times = 5
+        abl_num = top_num // 100
+        length_ds = int(len(dataset) * ds_ratio / layers / abl_times / 50)
+        with tqdm(total=layers * abl_times * length_ds * 7) as pbar:
+            for layer in range(layers - 1):
+                (
+                    _,
+                    _,
+                    _,
+                    top_index_code,
+                    top_index_math,
+                    top_index_wiki,
+                    top_index_cw,
+                    top_index_mc,
+                    top_index_mw,
+                    top_index,
+                ) = get_top_index(acts, top_num, layer)
+                name = ["code", "math", "wiki", "cw", "mc", "mw", "mcw"]
+                name_idx = 0
+                if model_name == "gemma2":
+                    release = "gemma-scope-2b-pt-res-canonical"
+                    sae_id = f"layer_{layer}/width_16k/canonical"
+                    saes = []
+
+                    saes.append(
+                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
+                    )
+                    sae_id = f"layer_{layer+1}/width_16k/canonical"
+                    saes.append(
+                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
+                    )
+                elif model_name == "llama3":
+                    release = "llama_scope_lxr_8x"
+                    saes = []
+                    sae_id = f"l{layer}r_8x"
+                    saes.append(
+                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
+                    )
+                    sae_id = f"l{layer+1}r_8x"
+                    saes.append(
+                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
+                    )
+                else:
+                    release = "pythia-70m-deduped-res-sm"
+                    saes = []
+                    sae_id = f"blocks.{layer}.hook_resid_post"
+                    saes.append(
+                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
+                    )
+                    sae_id = f"blocks.{layer+1}.hook_resid_post"
+                    saes.append(
+                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
+                    )
+                for top_t in [
+                    top_index_code,
+                    top_index_math,
+                    top_index_wiki,
+                    top_index_cw,
+                    top_index_mc,
+                    top_index_mw,
+                    top_index,
+                ]:
+                    for idx in range(abl_times):
+                        saes2 = copy.deepcopy(saes)
+                        list(
+                            map(
+                                lambda idy: saes2[0].W_dec[idy, :].zero_(),
+                                top_t[abl_num * idx : abl_num * (idx + 1)],
+                            )
+                        )
+                        doc_len = 0
+                        freqs = torch.zeros(saes[0].cfg.d_sae)
+                        loss = torch.zeros(length_ds)
+                        for idy in range(length_ds):
+                            # loop begin, fuck indent
+                            example = dataset[idy]
+                            tokens = model.to_tokens([example[text]], prepend_bos=True)
+                            loss1, cache1 = model.run_with_cache_with_saes(
+                                tokens, saes=saes, use_error_term=use_error_term
+                            )
+                            model.reset_saes()
+                            loss2, cache2 = model.run_with_cache_with_saes(
+                                tokens, saes=saes2, use_error_term=use_error_term
+                            )
+                            model.reset_saes()
+                            local_doc_len = cache1[
+                                f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
+                            ].shape[1]
+                            freq = torch.zeros_like(freqs)
+
+                            prompt2 = (
+                                f"blocks.{layer+1}.hook_resid_post.hook_sae_acts_post"
+                            )
+                            freq = (
+                                abs(
+                                    (
+                                        (cache1[prompt2] > 1e-3)
+                                        + 0
+                                        + (cache2[prompt2] > 1e-3)
+                                        - 1
+                                    )
+                                )
+                                < 1e-2
+                            )[0].sum(0) / local_doc_len
+                            loss[idy] = (loss1 - loss2).sum().item()
+                            # freq[layer] = (cache[prompt2] > 1e-3)[0].sum(0) / local_doc_len
+                            new_doc_len = doc_len + local_doc_len
+                            if idy == 0:
+                                freqs = freq
+                            else:
+                                freqs = (
+                                    freqs * doc_len / new_doc_len
+                                    + freq * local_doc_len / new_doc_len
+                                )
+                            doc_len = new_doc_len
+                            pbar.update(1)
+                        torch.save(
+                            freqs,
+                            f"./res/acts/abl/{model_name}_{data_name}_layer{layer}_abl{idx}_top{name[name_idx]}.pt",
+                        )
+                        torch.save(
+                            loss,
+                            f"./res/acts/abl/{model_name}_{data_name}_layer{layer}_abl{idx}_loss_top{name[name_idx]}.pt",
+                        )
+                    name_idx += 1
+
+
 if __name__ == "__main__":
     args = config()
     set_seed(args.seed)
+    # if args.model_name == "gemma2":
+    #     saes, model = obtain_gemma_data()
+    #     layers = 26
+    # elif args.model_name == "llama3":
+    #     saes, model = obtain_llama_data()
+    #     layers = 32
+    # else:
+    #     saes, model = obtain_pythia_data()
+    #     layers = 6
     if args.model_name == "gemma2":
-        saes, model = obtain_gemma_data()
-        layers = 26
+        model_name = "gemma-2-2b"
+        model = sae_lens.HookedSAETransformer.from_pretrained(
+            model_name, dtype=torch.bfloat16
+        )
     elif args.model_name == "llama3":
-        saes, model = obtain_llama_data()
-        layers = 32
+        model_name = "meta-llama/Llama-3.1-8B"
+        model = sae_lens.HookedSAETransformer.from_pretrained(
+            model_name, dtype=torch.bfloat16
+        )
     else:
-        saes, model = obtain_pythia_data()
-        layers = 6
+        model_name = "EleutherAI/pythia-70m-deduped"
+        model = sae_lens.HookedSAETransformer.from_pretrained(
+            model_name, dtype=torch.bfloat16
+        )
     # saes, model = obtain_gemma_data()
     # saes, model = obtain_llama_data()
     torch.cuda.empty_cache()
     # acts = obtain_acts(saes, model, layers, model_name=args.model_name)
     acts = load_acts_from_pretrained(model_name=args.model_name)
     # plot_basic_geometry(acts, model_name=args.model_name, saes=saes, model=model)
-    plot_dataset_geometry(acts, model_name=args.model_name, saes=saes, model=model)
+    # plot_dataset_geometry(acts, model_name=args.model_name, saes=saes, model=model)
+    ablation_decoder(
+        acts,
+        model,
+        model_name=args.model_name,
+        use_error_term=args.use_error_term,
+    )
