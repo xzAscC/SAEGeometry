@@ -260,6 +260,7 @@ def plot_freq(
         fig.delaxes(axes[6, 3])
         fig.delaxes(axes[6, 2])
     fig.savefig(f"./res/freq/{model_name}_freqs.pdf")
+    plt.close(fig)
     return None
 
 
@@ -357,6 +358,49 @@ def plot_cs_w_unembed(
     return None
 
 
+def get_top_index(acts: torch.Tensor, top_num: int, layer: int) -> np.ndarray:
+    code_acts = acts[1]
+    math_acts = acts[0]
+    wiki_acts = acts[2]
+    top_index_code = torch.topk(code_acts[layer], top_num).indices
+    top_index_math = torch.topk(math_acts[layer], top_num).indices
+    top_index_wiki = torch.topk(wiki_acts[layer], top_num).indices
+    top_index_mc = np.intersect1d(
+        top_index_code.cpu().numpy(), top_index_math.cpu().numpy()
+    )
+    top_index_mw = np.intersect1d(
+        top_index_math.cpu().numpy(), top_index_wiki.cpu().numpy()
+    )
+    top_index_cw = np.intersect1d(
+        top_index_code.cpu().numpy(), top_index_wiki.cpu().numpy()
+    )
+    top_index = np.intersect1d(top_index_mc, top_index_mw)
+    top_index_wiki = np.setdiff1d(
+        top_index_wiki.cpu().numpy(), np.union1d(top_index_cw, top_index_mw)
+    )
+    top_index_math = np.setdiff1d(
+        top_index_math.cpu().numpy(), np.union1d(top_index_mc, top_index_mw)
+    )
+    top_index_code = np.setdiff1d(
+        top_index_code.cpu().numpy(), np.union1d(top_index_mc, top_index_cw)
+    )
+    top_index_mc = np.setdiff1d(top_index_mc, top_index)
+    top_index_mw = np.setdiff1d(top_index_mw, top_index)
+    top_index_cw = np.setdiff1d(top_index_cw, top_index)
+    return (
+        code_acts,
+        math_acts,
+        wiki_acts,
+        top_index_code,
+        top_index_math,
+        top_index_wiki,
+        top_index_cw,
+        top_index_mc,
+        top_index_mw,
+        top_index,
+    )
+
+
 def plot_top_freq(
     acts: torch.Tensor,
     model_name: str = "gemma2",
@@ -370,34 +414,18 @@ def plot_top_freq(
     fig, axes = plt.subplots(row, col, figsize=(col * 10, row * 10))
     for layer in range(layers):
         ax = axes[layer // col, layer % col]
-        code_acts = acts[1]
-        math_acts = acts[0]
-        wiki_acts = acts[2]
-        top_index_code = torch.topk(code_acts[layer], top_num).indices
-        top_index_math = torch.topk(math_acts[layer], top_num).indices
-        top_index_wiki = torch.topk(wiki_acts[layer], top_num).indices
-        top_index_mc = np.intersect1d(
-            top_index_code.cpu().numpy(), top_index_math.cpu().numpy()
-        )
-        top_index_mw = np.intersect1d(
-            top_index_math.cpu().numpy(), top_index_wiki.cpu().numpy()
-        )
-        top_index_cw = np.intersect1d(
-            top_index_code.cpu().numpy(), top_index_wiki.cpu().numpy()
-        )
-        top_index = np.intersect1d(top_index_mc, top_index_mw)
-        top_index_wiki = np.setdiff1d(
-            top_index_wiki.cpu().numpy(), np.union1d(top_index_cw, top_index_mw)
-        )
-        top_index_math = np.setdiff1d(
-            top_index_math.cpu().numpy(), np.union1d(top_index_mc, top_index_mw)
-        )
-        top_index_code = np.setdiff1d(
-            top_index_code.cpu().numpy(), np.union1d(top_index_mc, top_index_cw)
-        )
-        top_index_mc = np.setdiff1d(top_index_mc, top_index)
-        top_index_mw = np.setdiff1d(top_index_mw, top_index)
-        top_index_cw = np.setdiff1d(top_index_cw, top_index)
+        (
+            code_acts,
+            math_acts,
+            wiki_acts,
+            top_index_code,
+            top_index_math,
+            top_index_wiki,
+            top_index_cw,
+            top_index_mc,
+            top_index_mw,
+            top_index,
+        ) = get_top_index(acts, top_num, layer)
         torch_top_index = torch.cat(
             (
                 torch.tensor(top_index_code, device=code_acts.device),
@@ -474,6 +502,741 @@ def plot_top_freq(
         fig.delaxes(axes[6, 3])
         fig.delaxes(axes[6, 2])
     fig.savefig(f"./res/freq/{model_name}_top_freqs.pdf")
+    plt.close(fig)
+    return None
+
+
+def plot_freq2cs_boxplot(
+    acts: torch.Tensor,
+    saes: List[sae_lens.SAE],
+    model: sae_lens.HookedSAETransformer,
+    model_name: str = "gemma2",
+) -> None:
+    """
+    TODO: fix the ugly code
+    Plot the frequency to cosine similarity boxplot.
+    """
+    layers, row, col = name2lrc(model_name)
+    wiki_stat = []
+    math_stat = []
+    code_stat = []
+    mwc_stat = []
+    mw_stat = []
+    cw_stat = []
+    mc_stat = []
+    wiki_stat_min = []
+    math_stat_min = []
+    code_stat_min = []
+    mwc_stat_min = []
+    mw_stat_min = []
+    cw_stat_min = []
+    mc_stat_min = []
+
+    wiki_stat_w_unembed = []
+    math_stat_w_unembed = []
+    code_stat_w_unembed = []
+    mwc_stat_w_unembed = []
+    mw_stat_w_unembed = []
+    cw_stat_w_unembed = []
+    mc_stat_w_unembed = []
+
+    wiki_stat_w_unembed_min = []
+    math_stat_w_unembed_min = []
+    code_stat_w_unembed_min = []
+    mwc_stat_w_unembed_min = []
+    mw_stat_w_unembed_min = []
+    cw_stat_w_unembed_min = []
+    mc_stat_w_unembed_min = []
+
+    top_num = acts[0].shape[1] // 100
+    for layer in range(layers):
+        (
+            code_acts,
+            math_acts,
+            wiki_acts,
+            top_index_code,
+            top_index_math,
+            top_index_wiki,
+            top_index_cw,
+            top_index_mc,
+            top_index_mw,
+            top_index,
+        ) = get_top_index(acts, top_num, layer)
+
+        wiki_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_wiki, :], saes[layer].W_dec[top_index_wiki, :]
+        )
+        math_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_math, :], saes[layer].W_dec[top_index_math, :]
+        )
+        code_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_code, :], saes[layer].W_dec[top_index_code, :]
+        )
+        mw_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_mw, :], saes[layer].W_dec[top_index_mw, :]
+        )
+        mc_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_mc, :], saes[layer].W_dec[top_index_mc, :]
+        )
+        cw_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_cw, :], saes[layer].W_dec[top_index_cw, :]
+        )
+        mwc_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index, :], saes[layer].W_dec[top_index, :]
+        )
+        wiki_stat.append(
+            pd.DataFrame(
+                {
+                    "cos": wiki_cs.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "wiki",
+                }
+            )
+        )
+        math_stat.append(
+            pd.DataFrame(
+                {
+                    "cos": math_cs.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "math",
+                }
+            )
+        )
+        code_stat.append(
+            pd.DataFrame(
+                {
+                    "cos": code_cs.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "code",
+                }
+            )
+        )
+        mw_stat.append(
+            pd.DataFrame(
+                {
+                    "cos": mw_cs.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mw",
+                }
+            )
+        )
+        mc_stat.append(
+            pd.DataFrame(
+                {
+                    "cos": mc_cs.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mc",
+                }
+            )
+        )
+        cw_stat.append(
+            pd.DataFrame(
+                {
+                    "cos": cw_cs.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "cw",
+                }
+            )
+        )
+        mwc_stat.append(
+            pd.DataFrame(
+                {
+                    "cos": mwc_cs.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mwc",
+                }
+            )
+        )
+
+        wiki_stat_min.append(
+            pd.DataFrame(
+                {
+                    "cos": wiki_cs.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "wiki_min",
+                }
+            )
+        )
+        math_stat_min.append(
+            pd.DataFrame(
+                {
+                    "cos": math_cs.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "math_min",
+                }
+            )
+        )
+        code_stat_min.append(
+            pd.DataFrame(
+                {
+                    "cos": code_cs.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "code_min",
+                }
+            )
+        )
+        mw_stat_min.append(
+            pd.DataFrame(
+                {
+                    "cos": mw_cs.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mw_min",
+                }
+            )
+        )
+        mc_stat_min.append(
+            pd.DataFrame(
+                {
+                    "cos": mc_cs.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mc_min",
+                }
+            )
+        )
+        cw_stat_min.append(
+            pd.DataFrame(
+                {
+                    "cos": cw_cs.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "cw_min",
+                }
+            )
+        )
+        mwc_stat_min.append(
+            pd.DataFrame(
+                {
+                    "cos": mwc_cs.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mwc_min",
+                }
+            )
+        )
+
+        wiki_cs_w_unembed = get_cosine_similarity(
+            saes[layer].W_dec[top_index_wiki, :], model.unembed.W_U.T
+        )
+        math_cs_w_unembed = get_cosine_similarity(
+            saes[layer].W_dec[top_index_math, :], model.unembed.W_U.T
+        )
+        code_cs_w_unembed = get_cosine_similarity(
+            saes[layer].W_dec[top_index_code, :], model.unembed.W_U.T
+        )
+        mw_cs_w_unembed = get_cosine_similarity(
+            saes[layer].W_dec[top_index_mw, :], model.unembed.W_U.T
+        )
+        mc_cs_w_unembed = get_cosine_similarity(
+            saes[layer].W_dec[top_index_mc, :], model.unembed.W_U.T
+        )
+        cw_cs_w_unembed = get_cosine_similarity(
+            saes[layer].W_dec[top_index_cw, :], model.unembed.W_U.T
+        )
+        mwc_cs_w_unembed = get_cosine_similarity(
+            saes[layer].W_dec[top_index, :], model.unembed.W_U.T
+        )
+        wiki_stat_w_unembed.append(
+            pd.DataFrame(
+                {
+                    "cos": wiki_cs_w_unembed.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "wiki",
+                }
+            )
+        )
+        math_stat_w_unembed.append(
+            pd.DataFrame(
+                {
+                    "cos": math_cs_w_unembed.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "math",
+                }
+            )
+        )
+        code_stat_w_unembed.append(
+            pd.DataFrame(
+                {
+                    "cos": code_cs_w_unembed.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "code",
+                }
+            )
+        )
+        mw_stat_w_unembed.append(
+            pd.DataFrame(
+                {
+                    "cos": mw_cs_w_unembed.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mw",
+                }
+            )
+        )
+        mc_stat_w_unembed.append(
+            pd.DataFrame(
+                {
+                    "cos": mc_cs_w_unembed.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mc",
+                }
+            )
+        )
+        cw_stat_w_unembed.append(
+            pd.DataFrame(
+                {
+                    "cos": cw_cs_w_unembed.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "cw",
+                }
+            )
+        )
+        mwc_stat_w_unembed.append(
+            pd.DataFrame(
+                {
+                    "cos": mwc_cs_w_unembed.fill_diagonal_(-100)
+                    .max(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mwc",
+                }
+            )
+        )
+        wiki_stat_w_unembed_min.append(
+            pd.DataFrame(
+                {
+                    "cos": wiki_cs_w_unembed.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "wiki_min",
+                }
+            )
+        )
+        math_stat_w_unembed_min.append(
+            pd.DataFrame(
+                {
+                    "cos": math_cs_w_unembed.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "math_min",
+                }
+            )
+        )
+        code_stat_w_unembed_min.append(
+            pd.DataFrame(
+                {
+                    "cos": code_cs_w_unembed.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "code_min",
+                }
+            )
+        )
+        mw_stat_w_unembed_min.append(
+            pd.DataFrame(
+                {
+                    "cos": mw_cs_w_unembed.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mw_min",
+                }
+            )
+        )
+        mc_stat_w_unembed_min.append(
+            pd.DataFrame(
+                {
+                    "cos": mc_cs_w_unembed.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mc_min",
+                }
+            )
+        )
+        cw_stat_w_unembed_min.append(
+            pd.DataFrame(
+                {
+                    "cos": cw_cs_w_unembed.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "cw_min",
+                }
+            )
+        )
+        mwc_stat_w_unembed_min.append(
+            pd.DataFrame(
+                {
+                    "cos": mwc_cs_w_unembed.fill_diagonal_(100)
+                    .min(1)
+                    .values.cpu()
+                    .to(torch.float32)
+                    .numpy(),
+                    "layer": layer + 1,
+                    "type": "mwc_min",
+                }
+            )
+        )
+    fig, axes = plt.subplots(2, 4, figsize=(40, 20))
+    fig.delaxes(axes[1, 3])
+
+    axes[0, 0].set_title("Wiki Cosine Similarity")
+    axes[0, 1].set_title("Math Cosine Similarity")
+    axes[0, 2].set_title("Code Cosine Similarity")
+    axes[0, 3].set_title("MW Cosine Similarity")
+    axes[1, 0].set_title("MC Cosine Similarity")
+    axes[1, 1].set_title("CW Cosine Similarity")
+    axes[1, 2].set_title("MWC Cosine Similarity")
+    sns.boxplot(
+        data=pd.concat(wiki_stat), x="layer", y="cos", hue="type", ax=axes[0, 0]
+    )
+    sns.boxplot(
+        data=pd.concat(math_stat), x="layer", y="cos", hue="type", ax=axes[0, 1]
+    )
+    sns.boxplot(
+        data=pd.concat(code_stat), x="layer", y="cos", hue="type", ax=axes[0, 2]
+    )
+    sns.boxplot(data=pd.concat(mw_stat), x="layer", y="cos", hue="type", ax=axes[0, 3])
+    sns.boxplot(data=pd.concat(mc_stat), x="layer", y="cos", hue="type", ax=axes[1, 0])
+    sns.boxplot(data=pd.concat(cw_stat), x="layer", y="cos", hue="type", ax=axes[1, 1])
+    sns.boxplot(data=pd.concat(mwc_stat), x="layer", y="cos", hue="type", ax=axes[1, 2])
+    sns.boxplot(
+        data=pd.concat(wiki_stat_min), x="layer", y="cos", hue="type", ax=axes[0, 0]
+    )
+    sns.boxplot(
+        data=pd.concat(math_stat_min), x="layer", y="cos", hue="type", ax=axes[0, 1]
+    )
+    sns.boxplot(
+        data=pd.concat(code_stat_min), x="layer", y="cos", hue="type", ax=axes[0, 2]
+    )
+    sns.boxplot(
+        data=pd.concat(mw_stat_min), x="layer", y="cos", hue="type", ax=axes[0, 3]
+    )
+    sns.boxplot(
+        data=pd.concat(mc_stat_min), x="layer", y="cos", hue="type", ax=axes[1, 0]
+    )
+    sns.boxplot(
+        data=pd.concat(cw_stat_min), x="layer", y="cos", hue="type", ax=axes[1, 1]
+    )
+    sns.boxplot(
+        data=pd.concat(mwc_stat_min), x="layer", y="cos", hue="type", ax=axes[1, 2]
+    )
+    plt.tight_layout()
+    fig.savefig(f"./res/cos_sim/{model_name}_top_freq_cs.pdf")
+    plt.close(fig)
+
+    fig, axes = plt.subplots(2, 4, figsize=(40, 20))
+    fig.delaxes(axes[1, 3])
+    axes[0, 0].set_title("Wiki Cosine Similarity w/ Unembed")
+    axes[0, 1].set_title("Math Cosine Similarity w/ Unembed")
+    axes[0, 2].set_title("Code Cosine Similarity w/ Unembed")
+    axes[0, 3].set_title("MW Cosine Similarity w/ Unembed")
+    axes[1, 0].set_title("MC Cosine Similarity w/ Unembed")
+    axes[1, 1].set_title("CW Cosine Similarity w/ Unembed")
+    axes[1, 2].set_title("MWC Cosine Similarity w/ Unembed")
+    sns.boxplot(
+        data=pd.concat(wiki_stat_w_unembed),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[0, 0],
+    )
+    sns.boxplot(
+        data=pd.concat(math_stat_w_unembed),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[0, 1],
+    )
+    sns.boxplot(
+        data=pd.concat(code_stat_w_unembed),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[0, 2],
+    )
+    sns.boxplot(
+        data=pd.concat(mw_stat_w_unembed), x="layer", y="cos", hue="type", ax=axes[0, 3]
+    )
+    sns.boxplot(
+        data=pd.concat(mc_stat_w_unembed), x="layer", y="cos", hue="type", ax=axes[1, 0]
+    )
+    sns.boxplot(
+        data=pd.concat(cw_stat_w_unembed), x="layer", y="cos", hue="type", ax=axes[1, 1]
+    )
+    sns.boxplot(
+        data=pd.concat(mwc_stat_w_unembed),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[1, 2],
+    )
+    sns.boxplot(
+        data=pd.concat(wiki_stat_w_unembed_min),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[0, 0],
+    )
+    sns.boxplot(
+        data=pd.concat(math_stat_w_unembed_min),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[0, 1],
+    )
+    sns.boxplot(
+        data=pd.concat(code_stat_w_unembed_min),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[0, 2],
+    )
+    sns.boxplot(
+        data=pd.concat(mw_stat_w_unembed_min),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[0, 3],
+    )
+    sns.boxplot(
+        data=pd.concat(mc_stat_w_unembed_min),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[1, 0],
+    )
+    sns.boxplot(
+        data=pd.concat(cw_stat_w_unembed_min),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[1, 1],
+    )
+    sns.boxplot(
+        data=pd.concat(mwc_stat_w_unembed_min),
+        x="layer",
+        y="cos",
+        hue="type",
+        ax=axes[1, 2],
+    )
+    plt.tight_layout()
+    fig.savefig(f"./res/cos_sim/{model_name}_top_freq_cs_w_unembed.pdf")
+    plt.close(fig)
+
+    return None
+
+
+# TODO: model and model_name seems repeated
+def plot_freq2cs_lineplot(
+    acts: torch.Tensor,
+    saes: List[sae_lens.SAE],
+    model_name: str = "gemma2",
+    max_cs: bool = True,
+) -> None:
+    """
+    Plot the inter-intra math, code, wiki, common / unembedded matrix
+    """
+    layers, row, col = name2lrc(model_name)
+    line_name = [
+        "wiki",
+        "math",
+        "code",
+        "common",
+        "wcc",
+        "ccc",
+        "mcc",
+        "wm",
+        "cm",
+        "wc",
+        "overall",
+    ]
+    stats = [[] for _ in range(len(line_name))]
+    top_num = acts[0].shape[1] // 100
+    for layer in range(layers):
+        (
+            code_acts,
+            math_acts,
+            wiki_acts,
+            top_index_code,
+            top_index_math,
+            top_index_wiki,
+            top_index_cw,
+            top_index_mc,
+            top_index_mw,
+            top_index,
+        ) = get_top_index(acts, top_num, layer)
+
+        wiki_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_wiki, :], saes[layer].W_dec[top_index_wiki, :]
+        )
+        math_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_math, :], saes[layer].W_dec[top_index_math, :]
+        )
+        code_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_code, :], saes[layer].W_dec[top_index_code, :]
+        )
+        common_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index, :], saes[layer].W_dec[top_index, :]
+        )
+        wcc_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_wiki, :], saes[layer].W_dec[top_index, :]
+        )
+        ccc_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_code, :], saes[layer].W_dec[top_index, :]
+        )
+        mcc_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_math, :], saes[layer].W_dec[top_index, :]
+        )
+        wm_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_wiki, :], saes[layer].W_dec[top_index_math, :]
+        )
+        cm_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_code, :], saes[layer].W_dec[top_index_math, :]
+        )
+        wc_cs = get_cosine_similarity(
+            saes[layer].W_dec[top_index_wiki, :], saes[layer].W_dec[top_index_code, :]
+        )
+        overall_cs = get_cosine_similarity(saes[layer].W_dec, saes[layer].W_dec)
+        for idx, cs in enumerate(
+            [
+                wiki_cs,
+                math_cs,
+                code_cs,
+                common_cs,
+                wcc_cs,
+                ccc_cs,
+                mcc_cs,
+                wm_cs,
+                cm_cs,
+                wc_cs,
+                overall_cs,
+            ]
+        ):  
+            if max_cs:
+                stats[idx].append(
+                    float(cs.fill_diagonal_(-100).max(1).values.mean().to(torch.float32))
+                )
+            else:
+                stats[idx].append(
+                    float(cs.fill_diagonal_(0).abs().sum().to(torch.float32) / (cs.shape[0] * (cs.shape[1] - 1)))
+                )
+    
+    stat_list_df = []
+    for idx, stat in enumerate(stats):
+        stat_df = pd.DataFrame(
+            {
+                "cos": stat,
+                "layer": list(range(1, layers + 1)),
+                "line_name": [line_name[idx]] * layers
+            }
+        )
+        stat_list_df.append(stat_df)
+    stat_df = pd.concat(stat_list_df)
+    fig, ax = plt.subplots(figsize=(20, 10))
+    sns.lineplot(data=stat_df, x="layer", y="cos", hue="line_name", ax=ax)
+    ax.set_title("Average Cosine Similarity")
+    ax.set_xlabel("Layer")
+    ax.set_ylabel("Average Cosine Similarity")
+    if max_cs:
+        plt.savefig(f"./res/cos_sim/max_{model_name}_freq2cs_lineplot.pdf")
+    else:
+        plt.savefig(f"./res/cos_sim/avg_{model_name}_freq2cs_lineplot.pdf")
+    plt.close()
     return None
 
 
@@ -482,13 +1245,15 @@ def plot_dataset_geometry(
     saes: List[sae_lens.SAE],
     model: sae_lens.HookedSAETransformer,
     model_name: str = "gemma2",
-    data_name: List = ["math", "code", "wiki"],
 ) -> None:
     """
     Plot the dataset geometry.
     """
-    plot_top_freq(acts, model_name=model_name, data_name=data_name)
+    # plot_top_freq(acts, model_name=model_name, data_name=data_name)
+    # plot_freq2cs_boxplot(acts, model_name=model_name, saes=saes, model=model)
+    plot_freq2cs_lineplot(acts, model_name=model_name, saes=saes)
     return None
+
 
 def plot_basic_geometry(
     acts: torch.Tensor,
@@ -523,4 +1288,5 @@ if __name__ == "__main__":
     torch.cuda.empty_cache()
     # acts = obtain_acts(saes, model, layers, model_name=args.model_name)
     acts = load_acts_from_pretrained(model_name=args.model_name)
-    plot_basic_geometry(acts, model_name=args.model_name, saes=saes, model=model)
+    # plot_basic_geometry(acts, model_name=args.model_name, saes=saes, model=model)
+    plot_dataset_geometry(acts, model_name=args.model_name, saes=saes, model=model)
