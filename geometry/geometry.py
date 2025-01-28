@@ -39,14 +39,14 @@ def config():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="gemma2",
+        default= "llama3",
         help="The model name.",
         choices=["gemma2", "llama3", "pythia"],
     )
     parser.add_argument(
         "--use_error_term",
         type=bool,
-        default=True,
+        default=False,
         help="Whether to use the error term.",
     )
     args = parser.parse_args()
@@ -410,7 +410,6 @@ def get_top_index(acts: torch.Tensor, top_num: int, layer: int) -> np.ndarray:
 def plot_top_freq(
     acts: torch.Tensor,
     model_name: str = "gemma2",
-    data_name: List = ["math", "code", "wiki"],
 ) -> None:
     """
     Plot the top frequency of activations.
@@ -1260,8 +1259,8 @@ def plot_dataset_geometry(
     """
     Plot the dataset geometry.
     """
-    # plot_top_freq(acts, model_name=model_name, data_name=data_name)
-    # plot_freq2cs_boxplot(acts, model_name=model_name, saes=saes, model=model)
+    plot_top_freq(acts, model_name=model_name)
+    plot_freq2cs_boxplot(acts, model_name=model_name, saes=saes, model=model)
     plot_freq2cs_lineplot(acts, model_name=model_name, saes=saes)
     return None
 
@@ -1302,158 +1301,482 @@ def ablation_decoder(
                 "train"
             ]
             text = "text"
-            if model_name == "gemma2":
-                ds_ratio = 0.5
-            elif model_name == "llama3":
-                ds_ratio = 0.05
-            else:
-                ds_ratio = 1
+            ds_ratio = 3e-3
         elif data_name == "code":
             dataset = datasets.load_dataset("b-mc2/sql-create-context")["train"]
             text = "answer"
-            if model_name == "gemma2":
-                ds_ratio = 0.5
-            elif model_name == "llama3":
-                ds_ratio = 0.05
-            else:
-                ds_ratio = 1
+            ds_ratio = 1e-3
         elif data_name == "math":
             dataset = datasets.load_dataset("TIGER-Lab/MathInstruct")["train"]
             text = "output"
-            if model_name == "gemma2":
-                ds_ratio = 0.1
-            elif model_name == "llama3":
-                ds_ratio = 0.01
-            else:
-                ds_ratio = 1
+            ds_ratio = 5e-4
         # 2. ablate sae
         layers, _, _ = name2lrc(model_name)
+        layers = 2
         top_num = acts[0].shape[1] // 10
-        abl_times = 5
-        abl_num = top_num // 100
-        length_ds = int(len(dataset) * ds_ratio / layers / abl_times / 50)
-        with tqdm(total=layers * abl_times * length_ds * 7) as pbar:
+        abl_times = 1
+        abl_num = top_num // 10
+        length_ds = int(len(dataset) * ds_ratio)
+        # running times: layers * vector_group * abl_times * length_ds
+        for layer in range(layers - 1):
+            (
+                _,
+                _,
+                _,
+                top_index_code,
+                top_index_math,
+                top_index_wiki,
+                top_index_cw,
+                top_index_mc,
+                top_index_mw,
+                top_index,
+            ) = get_top_index(acts, top_num, layer)
+            name = ["code", "math", "wiki", "cw", "mc", "mw", "mcw"]
+            name_idx = 0
+            if model_name == "gemma2":
+                release = "gemma-scope-2b-pt-res-canonical"
+                sae_id = f"layer_{layer}/width_16k/canonical"
+                saes = []
+                saes.append(
+                    sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(
+                        dtype=torch.bfloat16
+                    )
+                )
+                sae_id = f"layer_{layer+1}/width_16k/canonical"
+                saes.append(
+                    sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(
+                        dtype=torch.bfloat16
+                    )
+                )
+            elif model_name == "llama3":
+                release = "llama_scope_lxr_8x"
+                saes = []
+                sae_id = f"l{layer}r_8x"
+                saes.append(
+                    sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
+                )
+                sae_id = f"l{layer+1}r_8x"
+                saes.append(
+                    sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
+                )
+            else:
+                release = "pythia-70m-deduped-res-sm"
+                saes = []
+                sae_id = f"blocks.{layer}.hook_resid_post"
+                saes.append(
+                    sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(
+                        dtype=torch.bfloat16
+                    )
+                )
+                sae_id = f"blocks.{layer+1}.hook_resid_post"
+                saes.append(
+                    sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(
+                        dtype=torch.bfloat16
+                    )
+                )
+            for top_t in tqdm([
+                top_index_code,
+                top_index_math,
+                top_index_wiki,
+                top_index_cw,
+                top_index_mc,
+                top_index_mw,
+                top_index,
+            ]):
+                for idx in range(abl_times):
+                    if model_name == "gemma2":
+                        release = "gemma-scope-2b-pt-res-canonical"
+                        sae_id = f"layer_{layer}/width_16k/canonical"
+                        saes2 = []
+                        saes2.append(
+                            sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[
+                                0
+                            ].to(dtype=torch.bfloat16)
+                        )
+                        sae_id = f"layer_{layer+1}/width_16k/canonical"
+                        saes2.append(
+                            sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[
+                                0
+                            ].to(dtype=torch.bfloat16)
+                        )
+                    elif model_name == "llama3":
+                        release = "llama_scope_lxr_8x"
+                        saes2 = []
+                        sae_id = f"l{layer}r_8x"
+                        saes2.append(
+                            sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
+                        )
+                        sae_id = f"l{layer+1}r_8x"
+                        saes2.append(
+                            sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
+                        )
+                    list(
+                        map(
+                            lambda idy: saes2[0].W_dec[idy, :].zero_(),
+                            top_t[abl_num * idx : abl_num * (idx + 1)],
+                        )
+                    )
+                    doc_len = 0
+                    freqs = torch.zeros(saes[0].cfg.d_sae)
+                    loss = torch.zeros(length_ds)
+                    for idy in tqdm(range(length_ds)):
+                        # loop begin, fuck indent
+                        example = dataset[idy]
+                        tokens = model.to_tokens([example[text]], prepend_bos=True)
+                        loss1, cache1 = model.run_with_cache_with_saes(
+                            tokens, saes=saes, use_error_term=use_error_term
+                        )
+                        model.reset_saes()
+                        loss2, cache2 = model.run_with_cache_with_saes(
+                            tokens, saes=saes2, use_error_term=use_error_term
+                        )
+                        model.reset_saes()
+                        local_doc_len = cache1[
+                            f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
+                        ].shape[1]
+                        freq = torch.zeros_like(freqs)
+
+                        prompt2 = f"blocks.{layer+1}.hook_resid_post.hook_sae_acts_post"
+                        freq = (
+                            abs(
+                                (
+                                    (cache1[prompt2] > 1e-3)
+                                    + 0
+                                    + (cache2[prompt2] > 1e-3)
+                                    - 1
+                                )
+                            )
+                            < 1e-2
+                        )[0].sum(0) / local_doc_len
+                        loss[idy] = (loss1 - loss2).sum().item()
+                        # freq[layer] = (cache[prompt2] > 1e-3)[0].sum(0) / local_doc_len
+                        new_doc_len = doc_len + local_doc_len
+                        if idy == 0:
+                            freqs = freq
+                        else:
+                            freqs = (
+                                freqs * doc_len / new_doc_len
+                                + freq * local_doc_len / new_doc_len
+                            )
+                        doc_len = new_doc_len
+                    torch.save(
+                        freqs,
+                        f"./res/acts/abl/{model_name}_{data_name}_layer{layer}_abl{idx}_top{name[name_idx]}.pt",
+                    )
+                    torch.save(
+                        loss,
+                        f"./res/acts/abl/{model_name}_{data_name}_layer{layer}_abl{idx}_loss_top{name[name_idx]}.pt",
+                    )
+                name_idx += 1
+
+
+def ablation_load_save(
+    abl_path: str = "./res/acts/abl",
+    model_name: str = "llama3",
+    data_name: List = ["math", "code", "wiki"],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return: torch.tensor [ds, layer, abl_times, abl_group, sae_size], torch.tensor [ds, layer, abl_times, abl_group, length_ds]"""
+    layers, _, _ = name2lrc(model_name)
+    abl_times = 5
+    for data in data_name:
+        for layer in range(layers - 1):
+            for idx in range(abl_times):
+                for name in ["code", "math", "wiki", "cw", "mc", "mw", "mcw"]:
+                    freq = torch.load(
+                        f"{abl_path}/{model_name}_{data}_layer{layer}_abl{idx}_top{name}.pt"
+                    )
+                    loss = torch.load(
+                        f"{abl_path}/{model_name}_{data}_layer{layer}_abl{idx}_loss_top{name}.pt"
+                    )
+                    print(freq, loss)
+
+
+def draw_IOU_ablation(
+    acts: List[torch.tensor],
+    abl_path: str = "./res/acts/abl",
+    model_name: str = "llama3",
+    iou_number: bool = False,
+):
+    layers, row, col = name2lrc(model_name)
+    abl_times = 5
+    vector_group = ["code", "math", "wiki", "cw", "mc", "mw", "mcw"]
+    layer_index = [
+        [[] for _ in vector_group] for i in range(layers - 1)
+    ]  # [layer][abl_group]
+    if model_name == "gemma2":
+        d_sae = 16384
+    else:
+        d_sae = 32768
+    top_num = acts[0].shape[1] // 10
+    for layer in range(layers - 1):
+        (
+            code_acts,
+            math_acts,
+            wiki_acts,
+            top_index_code,
+            top_index_math,
+            top_index_wiki,
+            top_index_cw,
+            top_index_mc,
+            top_index_mw,
+            top_index,
+        ) = get_top_index(acts, top_num, layer)
+        layer_index[layer][0] = top_index_code
+        layer_index[layer][1] = top_index_math
+        layer_index[layer][2] = top_index_wiki
+        layer_index[layer][3] = top_index_cw
+        layer_index[layer][4] = top_index_mc
+        layer_index[layer][5] = top_index_mw
+        layer_index[layer][6] = top_index
+    for data in ["math", "code", "wiki"]:
+        for ablation in tqdm(["code", "math", "wiki", "cw", "mc", "mw", "mcw"]):
+            fig, axes = plt.subplots(2, 4, figsize=(40, 20))
+            freq = torch.zeros(layers - 1, abl_times, d_sae)
+            # freq = torch.load(
+            #     osp.join('./res/abl_freq', f"{model_name}_{data}_abl_{ablation}_freq.pt")
+            # )
+            wiki_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
+            math_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
+            code_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
+            mw_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
+            mc_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
+            cw_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
+            common_res_shape = [
+                [[] for i in range(abl_times)] for _ in range(layers - 1)
+            ]
             for layer in range(layers - 1):
-                (
-                    _,
-                    _,
-                    _,
-                    top_index_code,
-                    top_index_math,
-                    top_index_wiki,
-                    top_index_cw,
-                    top_index_mc,
-                    top_index_mw,
-                    top_index,
-                ) = get_top_index(acts, top_num, layer)
-                name = ["code", "math", "wiki", "cw", "mc", "mw", "mcw"]
-                name_idx = 0
-                if model_name == "gemma2":
-                    release = "gemma-scope-2b-pt-res-canonical"
-                    sae_id = f"layer_{layer}/width_16k/canonical"
-                    saes = []
+                for idx in range(abl_times):
+                    freq_name = (
+                        f"{model_name}_{data}_layer{layer}_abl{idx}_top{ablation}.pt"
+                    )
+                    path = osp.join(abl_path, freq_name)
+                    freq[layer, idx, :] = torch.load(path)
+                    code_res_shape[layer][idx] = np.intersect1d(
+                        layer_index[layer][0],
+                        freq[layer, idx, :].nonzero().cpu().numpy(),
+                    )
+                    math_res_shape[layer][idx] = np.intersect1d(
+                        layer_index[layer][1],
+                        freq[layer, idx, :].nonzero().cpu().numpy(),
+                    )
+                    wiki_res_shape[layer][idx] = np.intersect1d(
+                        layer_index[layer][2],
+                        freq[layer, idx, :].nonzero().cpu().numpy(),
+                    )
+                    cw_res_shape[layer][idx] = np.intersect1d(
+                        layer_index[layer][3],
+                        freq[layer, idx, :].nonzero().cpu().numpy(),
+                    )
+                    mc_res_shape[layer][idx] = np.intersect1d(
+                        layer_index[layer][4],
+                        freq[layer, idx, :].nonzero().cpu().numpy(),
+                    )
+                    mw_res_shape[layer][idx] = np.intersect1d(
+                        layer_index[layer][5],
+                        freq[layer, idx, :].nonzero().cpu().numpy(),
+                    )
+                    common_res_shape[layer][idx] = np.intersect1d(
+                        layer_index[layer][6],
+                        freq[layer, idx, :].nonzero().cpu().numpy(),
+                    )
+            if iou_number:
+                axes[0, 0].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on wiki"
+                )
+                for layer in range(layers - 1):
+                    axes[0, 0].boxplot(
+                        [len(wiki_res_shape[layer][idx]) for idx in range(abl_times)],
+                        positions=[layer + 1],
+                    )
+                axes[0, 1].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on math"
+                )
+                for layer in range(layers - 1):
+                    axes[0, 1].boxplot(
+                        [len(math_res_shape[layer][idx]) for idx in range(abl_times)],
+                        positions=[layer + 1],
+                    )
+                axes[0, 2].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on code"
+                )
+                for layer in range(layers - 1):
+                    axes[0, 2].boxplot(
+                        [len(code_res_shape[layer][idx]) for idx in range(abl_times)],
+                        positions=[layer + 1],
+                    )
+                axes[0, 3].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on mw"
+                )
+                for layer in range(layers - 1):
+                    axes[0, 3].boxplot(
+                        [len(mw_res_shape[layer][idx]) for idx in range(abl_times)],
+                        positions=[layer + 1],
+                    )
+                axes[1, 0].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on mc"
+                )
+                for layer in range(layers - 1):
+                    axes[1, 0].boxplot(
+                        [len(mc_res_shape[layer][idx]) for idx in range(abl_times)],
+                        positions=[layer + 1],
+                    )
+                axes[1, 1].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on cw"
+                )
+                for layer in range(layers - 1):
+                    axes[1, 1].boxplot(
+                        [len(cw_res_shape[layer][idx]) for idx in range(abl_times)],
+                        positions=[layer + 1],
+                    )
+                axes[1, 2].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on mcw"
+                )
+                for layer in range(layers - 1):
+                    axes[1, 2].boxplot(
+                        [len(common_res_shape[layer][idx]) for idx in range(abl_times)],
+                        positions=[layer + 1],
+                    )
+                plt.tight_layout()
+                fig.delaxes(axes[1, 3])
+                fig.savefig(
+                    f"./res/abl_freq_res/{model_name}_{data}_abl_{ablation}_freq_shape.pdf"
+                )
+            else:
+                axes[0, 0].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on wiki"
+                )
+                for layer in range(layers - 1):
+                    axes[0, 0].boxplot(
+                        [
+                            freq[layer, idx, wiki_res_shape[layer][idx]]
+                            .mean()
+                            .cpu()
+                            .numpy()
+                            for idx in range(abl_times)
+                        ],
+                        positions=[layer + 1],
+                    )
+                axes[0, 1].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on math"
+                )
+                for layer in range(layers - 1):
+                    axes[0, 1].boxplot(
+                        [
+                            freq[layer, idx, math_res_shape[layer][idx]]
+                            .mean()
+                            .cpu()
+                            .numpy()
+                            for idx in range(abl_times)
+                        ],
+                        positions=[layer + 1],
+                    )
+                axes[0, 2].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on code"
+                )
+                for layer in range(layers - 1):
+                    axes[0, 2].boxplot(
+                        [
+                            freq[layer, idx, code_res_shape[layer][idx]]
+                            .mean()
+                            .cpu()
+                            .numpy()
+                            for idx in range(abl_times)
+                        ],
+                        positions=[layer + 1],
+                    )
+                axes[0, 3].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on mw"
+                )
+                for layer in range(layers - 1):
+                    axes[0, 3].boxplot(
+                        [
+                            freq[layer, idx, mw_res_shape[layer][idx]]
+                            .mean()
+                            .cpu()
+                            .numpy()
+                            for idx in range(abl_times)
+                        ],
+                        positions=[layer + 1],
+                    )
+                axes[1, 0].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on mc"
+                )
+                for layer in range(layers - 1):
+                    axes[1, 0].boxplot(
+                        [
+                            freq[layer, idx, mc_res_shape[layer][idx]]
+                            .mean()
+                            .cpu()
+                            .numpy()
+                            for idx in range(abl_times)
+                        ],
+                        positions=[layer + 1],
+                    )
+                axes[1, 1].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on cw"
+                )
+                for layer in range(layers - 1):
+                    axes[1, 1].boxplot(
+                        [
+                            freq[layer, idx, cw_res_shape[layer][idx]]
+                            .mean()
+                            .cpu()
+                            .numpy()
+                            for idx in range(abl_times)
+                        ],
+                        positions=[layer + 1],
+                    )
+                axes[1, 2].set_title(
+                    f"Ablate {ablation} on {data} dataset, influence on mcw"
+                )
+                for layer in range(layers - 1):
+                    axes[1, 2].boxplot(
+                        [
+                            freq[layer, idx, common_res_shape[layer][idx]]
+                            .mean()
+                            .cpu()
+                            .numpy()
+                            for idx in range(abl_times)
+                        ],
+                        positions=[layer + 1],
+                    )
+                plt.tight_layout()
+                fig.delaxes(axes[1, 3])
+                fig.savefig(
+                    f"./res/abl_freq_res/{model_name}_{data}_abl_{ablation}_freq_value.pdf"
+                )
+            torch.save(
+                freq, f"./res/abl_freq/{model_name}_{data}_abl_{ablation}_freq.pt"
+            )
+            plt.close(fig)
 
-                    saes.append(
-                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
-                    )
-                    sae_id = f"layer_{layer+1}/width_16k/canonical"
-                    saes.append(
-                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
-                    )
-                elif model_name == "llama3":
-                    release = "llama_scope_lxr_8x"
-                    saes = []
-                    sae_id = f"l{layer}r_8x"
-                    saes.append(
-                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
-                    )
-                    sae_id = f"l{layer+1}r_8x"
-                    saes.append(
-                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
-                    )
-                else:
-                    release = "pythia-70m-deduped-res-sm"
-                    saes = []
-                    sae_id = f"blocks.{layer}.hook_resid_post"
-                    saes.append(
-                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
-                    )
-                    sae_id = f"blocks.{layer+1}.hook_resid_post"
-                    saes.append(
-                        sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
-                    )
-                for top_t in [
-                    top_index_code,
-                    top_index_math,
-                    top_index_wiki,
-                    top_index_cw,
-                    top_index_mc,
-                    top_index_mw,
-                    top_index,
-                ]:
-                    for idx in range(abl_times):
-                        saes2 = copy.deepcopy(saes)
-                        list(
-                            map(
-                                lambda idy: saes2[0].W_dec[idy, :].zero_(),
-                                top_t[abl_num * idx : abl_num * (idx + 1)],
-                            )
-                        )
-                        doc_len = 0
-                        freqs = torch.zeros(saes[0].cfg.d_sae)
-                        loss = torch.zeros(length_ds)
-                        for idy in range(length_ds):
-                            # loop begin, fuck indent
-                            example = dataset[idy]
-                            tokens = model.to_tokens([example[text]], prepend_bos=True)
-                            loss1, cache1 = model.run_with_cache_with_saes(
-                                tokens, saes=saes, use_error_term=use_error_term
-                            )
-                            model.reset_saes()
-                            loss2, cache2 = model.run_with_cache_with_saes(
-                                tokens, saes=saes2, use_error_term=use_error_term
-                            )
-                            model.reset_saes()
-                            local_doc_len = cache1[
-                                f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
-                            ].shape[1]
-                            freq = torch.zeros_like(freqs)
 
-                            prompt2 = (
-                                f"blocks.{layer+1}.hook_resid_post.hook_sae_acts_post"
-                            )
-                            freq = (
-                                abs(
-                                    (
-                                        (cache1[prompt2] > 1e-3)
-                                        + 0
-                                        + (cache2[prompt2] > 1e-3)
-                                        - 1
-                                    )
-                                )
-                                < 1e-2
-                            )[0].sum(0) / local_doc_len
-                            loss[idy] = (loss1 - loss2).sum().item()
-                            # freq[layer] = (cache[prompt2] > 1e-3)[0].sum(0) / local_doc_len
-                            new_doc_len = doc_len + local_doc_len
-                            if idy == 0:
-                                freqs = freq
-                            else:
-                                freqs = (
-                                    freqs * doc_len / new_doc_len
-                                    + freq * local_doc_len / new_doc_len
-                                )
-                            doc_len = new_doc_len
-                            pbar.update(1)
-                        torch.save(
-                            freqs,
-                            f"./res/acts/abl/{model_name}_{data_name}_layer{layer}_abl{idx}_top{name[name_idx]}.pt",
-                        )
-                        torch.save(
-                            loss,
-                            f"./res/acts/abl/{model_name}_{data_name}_layer{layer}_abl{idx}_loss_top{name[name_idx]}.pt",
-                        )
-                    name_idx += 1
+def ablation_loss(abl_path: str = "./res/acts/abl", model_name: str = "llama3"):
+    layers, _, _ = name2lrc(model_name)
+    vector_group = ["code", "math", "wiki", "cw", "mc", "mw", "mcw"]
+    dataset_name = ["math", "code", "wiki"]
+    abl_times = 5
+    loss = torch.zeros(layers - 1, len(dataset_name), len(vector_group), abl_times)
+    for layer in range(layers - 1):
+        for data in dataset_name:
+            for ablation in vector_group:
+                for idx in range(abl_times):
+                    freq_name = f"{model_name}_{data}_layer{layer}_abl{idx}_loss_top{ablation}.pt"
+                    path = osp.join(abl_path, freq_name)
+                    ablation_idx = vector_group.index(ablation)
+                    dataset_name_idx = dataset_name.index(data)
+                    loss[layer, dataset_name_idx, ablation_idx, idx] = torch.load(path).mean()
+    torch.save(loss, f"./res/abl_loss/{model_name}_loss.pt")
+    fig, axes = plt.subplots(7, 3, figsize=(30, 10))
+    for idx, data in enumerate(dataset_name):
+        for idy, ablation in enumerate(vector_group):
+            axes[idy, idx].set_title(f"{model_name}: ablate {ablation} on {data} dataset loss")
+            sns.boxplot(data=loss[:, idx, idy, :], ax=axes[idy, idx])
+    plt.tight_layout()
+    fig.savefig(f"./res/abl_loss/{model_name}_loss.pdf")
+    plt.close(fig)
+    return None
+                
 
 
 if __name__ == "__main__":
@@ -1468,6 +1791,34 @@ if __name__ == "__main__":
     # else:
     #     saes, model = obtain_pythia_data()
     #     layers = 6
+    # # if args.model_name == "gemma2":
+    # #     model_name = "gemma-2-2b"
+    # #     model = sae_lens.HookedSAETransformer.from_pretrained(
+    # #         model_name, dtype=torch.bfloat16
+    # #     )
+    # # elif args.model_name == "llama3":
+    # #     model_name = "meta-llama/Llama-3.1-8B"
+    # #     model = sae_lens.HookedSAETransformer.from_pretrained(
+    # #         model_name, dtype=torch.bfloat16
+    # #     )
+    # # else:
+    # #     model_name = "EleutherAI/pythia-70m-deduped"
+    # #     model = sae_lens.HookedSAETransformer.from_pretrained(
+    # #         model_name, dtype=torch.bfloat16
+    # #     )
+    # # saes, model = obtain_gemma_data()
+    # # saes, model = obtain_llama_data()
+    # torch.cuda.empty_cache()
+    # # acts = obtain_acts(saes, model, layers, model_name=args.model_name)
+    # acts = load_acts_from_pretrained(model_name=args.model_name)
+    # plot_basic_geometry(acts, model_name=args.model_name, saes=saes, model=model)
+    # plot_dataset_geometry(acts, model_name=args.model_name, saes=saes, model=model)
+    # # ablation_decoder(
+    # #     acts,
+    # #     model,
+    # #     model_name=args.model_name,
+    # #     use_error_term=args.use_error_term,
+    # # )
     if args.model_name == "gemma2":
         model_name = "gemma-2-2b"
         model = sae_lens.HookedSAETransformer.from_pretrained(
@@ -1478,21 +1829,12 @@ if __name__ == "__main__":
         model = sae_lens.HookedSAETransformer.from_pretrained(
             model_name, dtype=torch.bfloat16
         )
-    else:
-        model_name = "EleutherAI/pythia-70m-deduped"
-        model = sae_lens.HookedSAETransformer.from_pretrained(
-            model_name, dtype=torch.bfloat16
-        )
-    # saes, model = obtain_gemma_data()
-    # saes, model = obtain_llama_data()
-    torch.cuda.empty_cache()
-    # acts = obtain_acts(saes, model, layers, model_name=args.model_name)
     acts = load_acts_from_pretrained(model_name=args.model_name)
-    # plot_basic_geometry(acts, model_name=args.model_name, saes=saes, model=model)
-    # plot_dataset_geometry(acts, model_name=args.model_name, saes=saes, model=model)
     ablation_decoder(
         acts,
         model,
         model_name=args.model_name,
         use_error_term=args.use_error_term,
     )
+    # draw_IOU_ablation(acts, model_name=args.model_name)
+    # ablation_loss(model_name=args.model_name)
