@@ -16,6 +16,7 @@ from typing import List, Tuple
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=FutureWarning)
+torch.set_grad_enabled(False)
 
 
 def set_seed(seed: int = 42) -> None:
@@ -39,7 +40,7 @@ def config():
     parser.add_argument(
         "--model_name",
         type=str,
-        default= "llama3",
+        default="gemma2",
         help="The model name.",
         choices=["gemma2", "llama3", "pythia"],
     )
@@ -51,64 +52,6 @@ def config():
     )
     args = parser.parse_args()
     return args
-
-
-def obtain_pythia_data(
-    layers: int = 6,
-) -> Tuple[List[sae_lens.SAE], sae_lens.HookedSAETransformer]:
-    """
-    Obtain the data.
-    """
-
-    release = "pythia-70m-deduped-res-sm"
-    model_name = "EleutherAI/pythia-70m-deduped"
-    saes = []
-    for layer in tqdm(range(layers)):
-        sae_id = f"blocks.{layer}.hook_resid_post"
-        sae = sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
-        saes.append(sae)
-    model = sae_lens.HookedSAETransformer.from_pretrained(model_name)
-    return saes, model
-
-
-def obtain_llama_data(
-    layers: int = 32,
-) -> Tuple[List[sae_lens.SAE], sae_lens.HookedSAETransformer]:
-    """
-    Obtain the data.
-    """
-    model_name = "meta-llama/Llama-3.1-8B"
-    saes = []
-    release = "llama_scope_lxr_8x"
-    for layer in tqdm(range(layers)):
-        sae_id = f"l{layer}r_8x"
-        sae = sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
-        sae.to(dtype=torch.bfloat16)
-        saes.append(sae)
-    model = sae_lens.HookedSAETransformer.from_pretrained(
-        model_name, dtype=torch.bfloat16
-    )
-    return saes, model
-
-
-def obtain_gemma_data(
-    layers: int = 26,
-) -> Tuple[List[sae_lens.SAE], sae_lens.HookedSAETransformer]:
-    """
-    Obtain the data.
-    """
-    model_name = "gemma-2-2b"
-    saes = []
-    release = "gemma-scope-2b-pt-res-canonical"
-    for layer in tqdm(range(layers)):
-        sae_id = f"layer_{layer}/width_16k/canonical"
-        sae = sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0]
-        sae.to(dtype=torch.bfloat16)
-        saes.append(sae)
-    model = sae_lens.HookedSAETransformer.from_pretrained(
-        model_name, dtype=torch.bfloat16
-    )
-    return saes, model
 
 
 @torch.no_grad()
@@ -1312,13 +1255,12 @@ def ablation_decoder(
             ds_ratio = 5e-4
         # 2. ablate sae
         layers, _, _ = name2lrc(model_name)
-        layers = 2
         top_num = acts[0].shape[1] // 10
         abl_times = 1
         abl_num = top_num // 10
         length_ds = int(len(dataset) * ds_ratio)
-        # running times: layers * vector_group * abl_times * length_ds
-        for layer in range(layers - 1):
+        # running times: dataset * layers * vector_group * abl_times * length_ds
+        for layer in tqdm(range(layers - 1)):
             (
                 _,
                 _,
@@ -1374,7 +1316,7 @@ def ablation_decoder(
                         dtype=torch.bfloat16
                     )
                 )
-            for top_t in tqdm([
+            for top_t in [
                 top_index_code,
                 top_index_math,
                 top_index_wiki,
@@ -1382,33 +1324,37 @@ def ablation_decoder(
                 top_index_mc,
                 top_index_mw,
                 top_index,
-            ]):
+            ]:
                 for idx in range(abl_times):
                     if model_name == "gemma2":
                         release = "gemma-scope-2b-pt-res-canonical"
                         sae_id = f"layer_{layer}/width_16k/canonical"
                         saes2 = []
                         saes2.append(
-                            sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[
-                                0
-                            ].to(dtype=torch.bfloat16)
+                            sae_lens.SAE.from_pretrained(
+                                release, sae_id, device="cuda"
+                            )[0].to(dtype=torch.bfloat16)
                         )
                         sae_id = f"layer_{layer+1}/width_16k/canonical"
                         saes2.append(
-                            sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[
-                                0
-                            ].to(dtype=torch.bfloat16)
+                            sae_lens.SAE.from_pretrained(
+                                release, sae_id, device="cuda"
+                            )[0].to(dtype=torch.bfloat16)
                         )
                     elif model_name == "llama3":
                         release = "llama_scope_lxr_8x"
                         saes2 = []
                         sae_id = f"l{layer}r_8x"
                         saes2.append(
-                            sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
+                            sae_lens.SAE.from_pretrained(
+                                release, sae_id, device="cuda"
+                            )[0].to(dtype=torch.bfloat16)
                         )
                         sae_id = f"l{layer+1}r_8x"
                         saes2.append(
-                            sae_lens.SAE.from_pretrained(release, sae_id, device="cuda")[0].to(dtype=torch.bfloat16)
+                            sae_lens.SAE.from_pretrained(
+                                release, sae_id, device="cuda"
+                            )[0].to(dtype=torch.bfloat16)
                         )
                     list(
                         map(
@@ -1419,7 +1365,7 @@ def ablation_decoder(
                     doc_len = 0
                     freqs = torch.zeros(saes[0].cfg.d_sae)
                     loss = torch.zeros(length_ds)
-                    for idy in tqdm(range(length_ds)):
+                    for idy in range(length_ds):
                         # loop begin, fuck indent
                         example = dataset[idy]
                         tokens = model.to_tokens([example[text]], prepend_bos=True)
@@ -1498,7 +1444,7 @@ def draw_IOU_ablation(
     iou_number: bool = False,
 ):
     layers, row, col = name2lrc(model_name)
-    abl_times = 5
+    abl_times = 1
     vector_group = ["code", "math", "wiki", "cw", "mc", "mw", "mcw"]
     layer_index = [
         [[] for _ in vector_group] for i in range(layers - 1)
@@ -1529,254 +1475,101 @@ def draw_IOU_ablation(
         layer_index[layer][5] = top_index_mw
         layer_index[layer][6] = top_index
     for data in ["math", "code", "wiki"]:
-        for ablation in tqdm(["code", "math", "wiki", "cw", "mc", "mw", "mcw"]):
-            fig, axes = plt.subplots(2, 4, figsize=(40, 20))
-            freq = torch.zeros(layers - 1, abl_times, d_sae)
+        fig, axes = plt.subplots(2, 4, figsize=(40, 20))
+        abl_idx = 0
+        for ablation in tqdm(vector_group):
+            freq = torch.zeros(layers - 1, d_sae)
             # freq = torch.load(
             #     osp.join('./res/abl_freq', f"{model_name}_{data}_abl_{ablation}_freq.pt")
             # )
-            wiki_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
-            math_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
-            code_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
-            mw_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
-            mc_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
-            cw_res_shape = [[[] for i in range(abl_times)] for _ in range(layers - 1)]
-            common_res_shape = [
-                [[] for i in range(abl_times)] for _ in range(layers - 1)
-            ]
+            wiki_res_shape = [[] for _ in range(layers - 1)]
+            math_res_shape = [[] for _ in range(layers - 1)]
+            code_res_shape = [[] for _ in range(layers - 1)]
+            mw_res_shape = [[] for _ in range(layers - 1)]
+            mc_res_shape = [[] for _ in range(layers - 1)]
+            cw_res_shape = [[] for _ in range(layers - 1)]
+            common_res_shape = [[] for _ in range(layers - 1)]
             for layer in range(layers - 1):
-                for idx in range(abl_times):
-                    freq_name = (
-                        f"{model_name}_{data}_layer{layer}_abl{idx}_top{ablation}.pt"
-                    )
-                    path = osp.join(abl_path, freq_name)
-                    freq[layer, idx, :] = torch.load(path)
-                    code_res_shape[layer][idx] = np.intersect1d(
-                        layer_index[layer][0],
-                        freq[layer, idx, :].nonzero().cpu().numpy(),
-                    )
-                    math_res_shape[layer][idx] = np.intersect1d(
-                        layer_index[layer][1],
-                        freq[layer, idx, :].nonzero().cpu().numpy(),
-                    )
-                    wiki_res_shape[layer][idx] = np.intersect1d(
-                        layer_index[layer][2],
-                        freq[layer, idx, :].nonzero().cpu().numpy(),
-                    )
-                    cw_res_shape[layer][idx] = np.intersect1d(
-                        layer_index[layer][3],
-                        freq[layer, idx, :].nonzero().cpu().numpy(),
-                    )
-                    mc_res_shape[layer][idx] = np.intersect1d(
-                        layer_index[layer][4],
-                        freq[layer, idx, :].nonzero().cpu().numpy(),
-                    )
-                    mw_res_shape[layer][idx] = np.intersect1d(
-                        layer_index[layer][5],
-                        freq[layer, idx, :].nonzero().cpu().numpy(),
-                    )
-                    common_res_shape[layer][idx] = np.intersect1d(
-                        layer_index[layer][6],
-                        freq[layer, idx, :].nonzero().cpu().numpy(),
-                    )
-            if iou_number:
-                axes[0, 0].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on wiki"
-                )
-                for layer in range(layers - 1):
-                    axes[0, 0].boxplot(
-                        [len(wiki_res_shape[layer][idx]) for idx in range(abl_times)],
-                        positions=[layer + 1],
-                    )
-                axes[0, 1].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on math"
-                )
-                for layer in range(layers - 1):
-                    axes[0, 1].boxplot(
-                        [len(math_res_shape[layer][idx]) for idx in range(abl_times)],
-                        positions=[layer + 1],
-                    )
-                axes[0, 2].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on code"
-                )
-                for layer in range(layers - 1):
-                    axes[0, 2].boxplot(
-                        [len(code_res_shape[layer][idx]) for idx in range(abl_times)],
-                        positions=[layer + 1],
-                    )
-                axes[0, 3].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on mw"
-                )
-                for layer in range(layers - 1):
-                    axes[0, 3].boxplot(
-                        [len(mw_res_shape[layer][idx]) for idx in range(abl_times)],
-                        positions=[layer + 1],
-                    )
-                axes[1, 0].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on mc"
-                )
-                for layer in range(layers - 1):
-                    axes[1, 0].boxplot(
-                        [len(mc_res_shape[layer][idx]) for idx in range(abl_times)],
-                        positions=[layer + 1],
-                    )
-                axes[1, 1].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on cw"
-                )
-                for layer in range(layers - 1):
-                    axes[1, 1].boxplot(
-                        [len(cw_res_shape[layer][idx]) for idx in range(abl_times)],
-                        positions=[layer + 1],
-                    )
-                axes[1, 2].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on mcw"
-                )
-                for layer in range(layers - 1):
-                    axes[1, 2].boxplot(
-                        [len(common_res_shape[layer][idx]) for idx in range(abl_times)],
-                        positions=[layer + 1],
-                    )
-                plt.tight_layout()
-                fig.delaxes(axes[1, 3])
-                fig.savefig(
-                    f"./res/abl_freq_res/{model_name}_{data}_abl_{ablation}_freq_shape.pdf"
-                )
-            else:
-                axes[0, 0].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on wiki"
-                )
-                for layer in range(layers - 1):
-                    axes[0, 0].boxplot(
-                        [
-                            freq[layer, idx, wiki_res_shape[layer][idx]]
-                            .mean()
-                            .cpu()
-                            .numpy()
-                            for idx in range(abl_times)
-                        ],
-                        positions=[layer + 1],
-                    )
-                axes[0, 1].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on math"
-                )
-                for layer in range(layers - 1):
-                    axes[0, 1].boxplot(
-                        [
-                            freq[layer, idx, math_res_shape[layer][idx]]
-                            .mean()
-                            .cpu()
-                            .numpy()
-                            for idx in range(abl_times)
-                        ],
-                        positions=[layer + 1],
-                    )
-                axes[0, 2].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on code"
-                )
-                for layer in range(layers - 1):
-                    axes[0, 2].boxplot(
-                        [
-                            freq[layer, idx, code_res_shape[layer][idx]]
-                            .mean()
-                            .cpu()
-                            .numpy()
-                            for idx in range(abl_times)
-                        ],
-                        positions=[layer + 1],
-                    )
-                axes[0, 3].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on mw"
-                )
-                for layer in range(layers - 1):
-                    axes[0, 3].boxplot(
-                        [
-                            freq[layer, idx, mw_res_shape[layer][idx]]
-                            .mean()
-                            .cpu()
-                            .numpy()
-                            for idx in range(abl_times)
-                        ],
-                        positions=[layer + 1],
-                    )
-                axes[1, 0].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on mc"
-                )
-                for layer in range(layers - 1):
-                    axes[1, 0].boxplot(
-                        [
-                            freq[layer, idx, mc_res_shape[layer][idx]]
-                            .mean()
-                            .cpu()
-                            .numpy()
-                            for idx in range(abl_times)
-                        ],
-                        positions=[layer + 1],
-                    )
-                axes[1, 1].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on cw"
-                )
-                for layer in range(layers - 1):
-                    axes[1, 1].boxplot(
-                        [
-                            freq[layer, idx, cw_res_shape[layer][idx]]
-                            .mean()
-                            .cpu()
-                            .numpy()
-                            for idx in range(abl_times)
-                        ],
-                        positions=[layer + 1],
-                    )
-                axes[1, 2].set_title(
-                    f"Ablate {ablation} on {data} dataset, influence on mcw"
-                )
-                for layer in range(layers - 1):
-                    axes[1, 2].boxplot(
-                        [
-                            freq[layer, idx, common_res_shape[layer][idx]]
-                            .mean()
-                            .cpu()
-                            .numpy()
-                            for idx in range(abl_times)
-                        ],
-                        positions=[layer + 1],
-                    )
-                plt.tight_layout()
-                fig.delaxes(axes[1, 3])
-                fig.savefig(
-                    f"./res/abl_freq_res/{model_name}_{data}_abl_{ablation}_freq_value.pdf"
-                )
-            torch.save(
-                freq, f"./res/abl_freq/{model_name}_{data}_abl_{ablation}_freq.pt"
+                freq_name = f"{model_name}_{data}_layer{layer}_abl0_top{ablation}.pt"
+                path = osp.join(abl_path, freq_name)
+                freq[layer, :] = torch.load(path)
+                code_res_shape[layer] = len(np.intersect1d(
+                    layer_index[layer][0],
+                    freq[layer, :].nonzero().cpu().numpy(),
+                ))
+                math_res_shape[layer] = len(np.intersect1d(
+                    layer_index[layer][1],
+                    freq[layer, :].nonzero().cpu().numpy(),
+                ))
+                wiki_res_shape[layer] = len(np.intersect1d(
+                    layer_index[layer][2],
+                    freq[layer, :].nonzero().cpu().numpy(),
+                ))
+                cw_res_shape[layer] = len(np.intersect1d(
+                    layer_index[layer][3],
+                    freq[layer, :].nonzero().cpu().numpy(),
+                ))
+                mc_res_shape[layer] = len(np.intersect1d(
+                    layer_index[layer][4],
+                    freq[layer, :].nonzero().cpu().numpy(),
+                ))
+                mw_res_shape[layer] = len(np.intersect1d(
+                    layer_index[layer][5],
+                    freq[layer, :].nonzero().cpu().numpy(),
+                ))
+                common_res_shape[layer] = len(np.intersect1d(
+                    layer_index[layer][6],
+                    freq[layer, :].nonzero().cpu().numpy(),
+                ))            
+            row_idx = abl_idx // 4
+            col_idx = abl_idx % 4
+            sns.lineplot(data=wiki_res_shape, ax=axes[row_idx, col_idx], label="Wiki")
+            sns.lineplot(data=math_res_shape, ax=axes[row_idx, col_idx], label="Math")
+            sns.lineplot(data=code_res_shape, ax=axes[row_idx, col_idx], label="Code")
+            sns.lineplot(data=mw_res_shape, ax=axes[row_idx, col_idx], label="MW")
+            sns.lineplot(data=mc_res_shape, ax=axes[row_idx, col_idx], label="MC")
+            sns.lineplot(data=cw_res_shape, ax=axes[row_idx, col_idx], label="CW")
+            sns.lineplot(data=common_res_shape, ax=axes[row_idx, col_idx], label="Common")
+            abl_idx += 1
+            axes[row_idx, col_idx].set_title(
+                f"{model_name}: ablate {ablation} on {data} dataset"
             )
-            plt.close(fig)
+
+        torch.save(
+            freq, f"./res/abl_freq/{model_name}_{data}_abl__freq.pt"
+        )
+        fig.savefig(f"./res/abl_freq_res/{model_name}_{data}_abl_freq.pdf")
+        plt.close(fig)
 
 
 def ablation_loss(abl_path: str = "./res/acts/abl", model_name: str = "llama3"):
     layers, _, _ = name2lrc(model_name)
     vector_group = ["code", "math", "wiki", "cw", "mc", "mw", "mcw"]
     dataset_name = ["math", "code", "wiki"]
-    abl_times = 5
-    loss = torch.zeros(layers - 1, len(dataset_name), len(vector_group), abl_times)
+    abl_times = 1
+    loss = torch.zeros(layers - 1, len(dataset_name), len(vector_group))
     for layer in range(layers - 1):
         for data in dataset_name:
             for ablation in vector_group:
-                for idx in range(abl_times):
-                    freq_name = f"{model_name}_{data}_layer{layer}_abl{idx}_loss_top{ablation}.pt"
-                    path = osp.join(abl_path, freq_name)
-                    ablation_idx = vector_group.index(ablation)
-                    dataset_name_idx = dataset_name.index(data)
-                    loss[layer, dataset_name_idx, ablation_idx, idx] = torch.load(path).mean()
+                freq_name = (
+                    f"{model_name}_{data}_layer{layer}_abl0_loss_top{ablation}.pt"
+                )
+                path = osp.join(abl_path, freq_name)
+                ablation_idx = vector_group.index(ablation)
+                dataset_name_idx = dataset_name.index(data)
+                loss[layer, dataset_name_idx, ablation_idx] = torch.load(path).mean()
     torch.save(loss, f"./res/abl_loss/{model_name}_loss.pt")
     fig, axes = plt.subplots(7, 3, figsize=(30, 10))
     for idx, data in enumerate(dataset_name):
         for idy, ablation in enumerate(vector_group):
-            axes[idy, idx].set_title(f"{model_name}: ablate {ablation} on {data} dataset loss")
-            sns.boxplot(data=loss[:, idx, idy, :], ax=axes[idy, idx])
+            axes[idy, idx].set_title(
+                f"{model_name}: ablate {ablation} on {data} dataset loss"
+            )
+            sns.lineplot(data=loss[:, idx, idy], ax=axes[idy, idx])
     plt.tight_layout()
     fig.savefig(f"./res/abl_loss/{model_name}_loss.pdf")
     plt.close(fig)
     return None
-                
 
 
 if __name__ == "__main__":
@@ -1830,11 +1623,11 @@ if __name__ == "__main__":
             model_name, dtype=torch.bfloat16
         )
     acts = load_acts_from_pretrained(model_name=args.model_name)
-    ablation_decoder(
-        acts,
-        model,
-        model_name=args.model_name,
-        use_error_term=args.use_error_term,
-    )
-    # draw_IOU_ablation(acts, model_name=args.model_name)
+    # ablation_decoder(
+    #     acts,
+    #     model,
+    #     model_name=args.model_name,
+    #     use_error_term=args.use_error_term,
+    # )
+    draw_IOU_ablation(acts, model_name=args.model_name)
     # ablation_loss(model_name=args.model_name)
