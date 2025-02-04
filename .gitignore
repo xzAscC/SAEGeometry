@@ -204,3 +204,11 @@ wandb/
 
 # logs
 logs/
+# compressed files
+*.zip
+*.tar.gz
+*.tar
+*.gz
+*.tgz
+*.rar
+*.7z
