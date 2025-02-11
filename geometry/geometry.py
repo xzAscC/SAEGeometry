@@ -160,66 +160,7 @@ def get_cosine_similarity(
     return cosine_sim
 
 
-def load_acts_from_pretrained(
-    model_name: str = "gemma2",
-    path: str = "./res/acts/",
-    data_name: List = ["math", "code", "wiki"],
-) -> List[torch.Tensor]:
-    """
-    Load activations from pretrained model.
-    """
-    data_name = ["math", "code", "wiki"]
-    acts = []
-    for data in data_name:
-        full_path = osp.join(path, f"{model_name}_freqs_{data}.pt")
-        acts.append(torch.load(f"{path}{model_name}_freqs_{data}.pt"))
-    return acts
 
-
-def plot_freq(
-    acts: torch.Tensor,
-    model_name: str = "gemma2",
-    data_name: List = ["math", "code", "wiki"],
-) -> None:
-    """
-    Plot the frequency of activations.
-    """
-    layers, row, col = name2lrc(model_name)
-    fig, axes = plt.subplots(row, col, figsize=(col * 10, row * 10))
-    for layer in range(layers):
-        ax = axes[layer // col, layer % col]
-        for idx in range(len(data_name)):
-            data = data_name[idx]
-            df = pd.DataFrame(
-                {
-                    "vector index": range(len(acts[idx][layer])),
-                    "frequency value": acts[idx][layer].cpu().numpy(),
-                }
-            )
-            sns.lineplot(
-                data=df,
-                ax=ax,
-                x="vector index",
-                y="frequency value",
-                label=f"{data} Freq",
-            )
-        ax.set_title(f"Layer {layer}")
-    # plt.show()
-    if model_name == "gemma2":
-        fig.delaxes(axes[6, 3])
-        fig.delaxes(axes[6, 2])
-    fig.savefig(f"./res/freq/{model_name}_freqs.pdf")
-    plt.close(fig)
-    return None
-
-
-def name2lrc(name: str) -> Tuple[int, int, int]:
-    if name == "gemma2":
-        return 26, 7, 4
-    elif name == "llama3":
-        return 32, 8, 4
-    elif name == "pythia":
-        return 6, 2, 3
 
 
 def plot_cs(

@@ -1,8 +1,11 @@
 import torch
 import jaxtyping
+import pandas as pd
 import seaborn as sns
+import os.path as osp
 import matplotlib.pyplot as plt
 import numpy as np
+from typing import List, Tuple
 from tqdm import tqdm
 from data import load_dataset_by_name, fetch_sae_and_model
 
@@ -80,7 +83,9 @@ def cs_freqPattern_comparsion(model_name: str, dataset_name: str):
                     if res1.sum() == 0 and res2.sum() == 0:
                         pass
                     else:
-                        max_diffs[layer].append(((res1 & res2).sum() / dim1).cpu().item())
+                        max_diffs[layer].append(
+                            ((res1 & res2).sum() / dim1).cpu().item()
+                        )
                 except:
                     pass
                 try:
@@ -89,7 +94,9 @@ def cs_freqPattern_comparsion(model_name: str, dataset_name: str):
                     if res1.sum() == 0 and res2.sum() == 0:
                         pass
                     else:
-                        min_diffs[layer].append(((res1 & res2).sum() / dim1).cpu().item())
+                        min_diffs[layer].append(
+                            ((res1 & res2).sum() / dim1).cpu().item()
+                        )
                 except:
                     pass
                 try:
@@ -98,7 +105,9 @@ def cs_freqPattern_comparsion(model_name: str, dataset_name: str):
                     if res1.sum() == 0 and res2.sum() == 0:
                         pass
                     else:
-                        zero_diffs[layer].append(((res1 & res2).sum() / dim1).cpu().item())
+                        zero_diffs[layer].append(
+                            ((res1 & res2).sum() / dim1).cpu().item()
+                        )
                 except:
                     pass
 
@@ -110,6 +119,65 @@ def cs_freqPattern_comparsion(model_name: str, dataset_name: str):
         # sns.boxplot(zero_diffs)
         # plt.title("Nearly Zero Cosine Similarity Pair Frequency Pattern")
         return max_diffs, min_diffs, zero_diffs
+
+
+def name2lrc(name: str) -> Tuple[int, int, int]:
+    if name == "gemma-2-2b":
+        return 26, 7, 4
+    elif name == "llama3.1-8b":
+        32, 8, 4
+    elif name == "pythia-70m-deduped":
+        return 6, 2, 3
+
+
+def plot_freq(
+    model_name: str = "gemma-2-2b",  # "llama3.1-8b", "pythia-70m-deduped", "gemma-2-2b"
+) -> None:
+    """
+    Plot the frequency of activations.
+    Example:
+    plot_freq("gemma-2-2b")
+    """
+    layers, row, col = name2lrc(model_name)
+    acts = load_acts_from_pretrained()
+    stats = {"layer": [], "max": [], "avg": [], "min": [], "25%": [], "75%": []}
+    avg_acts = (acts[0] + acts[1] + acts[2]) / 3
+    for layer in range(layers):
+        stats["layer"].append(layer)
+        stats["max"].append(avg_acts[layer].max().item())
+        stats["avg"].append(avg_acts[layer].mean().item())
+        stats["min"].append(avg_acts[layer].min().item())
+        stats["25%"].append(avg_acts[layer].quantile(0.25).item())
+        stats["75%"].append(avg_acts[layer].quantile(0.75).item())
+    df = pd.DataFrame(stats)
+    fig, ax = plt.subplots()
+    # sns.lineplot(data=df, x="layer", y="max", label="max", ax=ax)
+    sns.lineplot(data=df, x="layer", y="avg", label="avg", ax=ax)
+    # sns.lineplot(data=df, x="layer", y="min", label="min", ax=ax)
+    sns.lineplot(data=df, x="layer", y="25%", label="25%", ax=ax)
+    sns.lineplot(data=df, x="layer", y="75%", label="75%", ax=ax)
+    ax.set_title(f"Activation Statistics for {model_name}")
+    ax.set_xlabel("Layer")
+    ax.set_ylabel("Activation ratio")
+    plt.savefig(f"../res/freq/{model_name}_activation_statistics.pdf")
+    plt.show()
+    return None
+
+
+def load_acts_from_pretrained(
+    model_name: str = "gemma2",
+    path: str = "./res/acts/",
+    data_name: List = ["math", "code", "wiki"],
+) -> List[torch.Tensor]:
+    """
+    Load activations from pretrained model.
+    """
+    data_name = ["math", "code", "wiki"]
+    acts = []
+    for data in data_name:
+        full_path = osp.join(path, f"{model_name}_freqs_{data}.pt")
+        acts.append(torch.load(full_path))
+    return acts
 
 
 if __name__ == "__main__":

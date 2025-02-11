@@ -212,3 +212,7 @@ logs/
 *.tgz
 *.rar
 *.7z
+
+# ipynb 
+*.ipynb
+test.ipynb
