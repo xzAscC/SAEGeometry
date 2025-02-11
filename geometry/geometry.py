@@ -246,48 +246,6 @@ def plot_cs_w_unembed(
     return None
 
 
-def get_top_index(acts: torch.Tensor, top_num: int, layer: int) -> np.ndarray:
-    code_acts = acts[1]
-    math_acts = acts[0]
-    wiki_acts = acts[2]
-    top_index_code = torch.topk(code_acts[layer], top_num).indices
-    top_index_math = torch.topk(math_acts[layer], top_num).indices
-    top_index_wiki = torch.topk(wiki_acts[layer], top_num).indices
-    top_index_mc = np.intersect1d(
-        top_index_code.cpu().numpy(), top_index_math.cpu().numpy()
-    )
-    top_index_mw = np.intersect1d(
-        top_index_math.cpu().numpy(), top_index_wiki.cpu().numpy()
-    )
-    top_index_cw = np.intersect1d(
-        top_index_code.cpu().numpy(), top_index_wiki.cpu().numpy()
-    )
-    top_index = np.intersect1d(top_index_mc, top_index_mw)
-    top_index_wiki = np.setdiff1d(
-        top_index_wiki.cpu().numpy(), np.union1d(top_index_cw, top_index_mw)
-    )
-    top_index_math = np.setdiff1d(
-        top_index_math.cpu().numpy(), np.union1d(top_index_mc, top_index_mw)
-    )
-    top_index_code = np.setdiff1d(
-        top_index_code.cpu().numpy(), np.union1d(top_index_mc, top_index_cw)
-    )
-    top_index_mc = np.setdiff1d(top_index_mc, top_index)
-    top_index_mw = np.setdiff1d(top_index_mw, top_index)
-    top_index_cw = np.setdiff1d(top_index_cw, top_index)
-    return (
-        code_acts,
-        math_acts,
-        wiki_acts,
-        top_index_code,
-        top_index_math,
-        top_index_wiki,
-        top_index_cw,
-        top_index_mc,
-        top_index_mw,
-        top_index,
-    )
-
 
 def plot_top_freq(
     acts: torch.Tensor,
