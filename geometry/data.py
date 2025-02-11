@@ -69,7 +69,7 @@ def load_dataset_by_name(dataset_name: str) -> Tuple[datasets.Dataset, float, st
         dataset = datasets.load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")[
             "test"
         ]
-        ratio = 1
+        ratio = 1e-2
         text = "text"
     elif dataset_name == "sql-create-context":
         dataset = datasets.load_dataset("b-mc2/sql-create-context")["train"]

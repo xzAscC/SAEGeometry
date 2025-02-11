@@ -54,71 +54,58 @@ def cs_freqPattern_comparsion(model_name: str, dataset_name: str):
     """
 
     saes, model = fetch_sae_and_model(model_name)
-
     dataset, ratio, text = load_dataset_by_name(dataset_name)
     max_diffs = [[] for _ in range(len(saes))]
     min_diffs = [[] for _ in range(len(saes))]
     zero_diffs = [[] for _ in range(len(saes))]
-    for layer, sae in enumerate(saes):
-        dataset_length = int(len(dataset))
-        cs = get_cosine_similarity(sae.W_dec, sae.W_dec).fill_diagonal_(-100).cpu()
-        max_indices = torch.where(cs > 0.9)
-        min_indices = torch.where((cs > -1.1) & (cs < -0.9))
-        zero_indices = torch.where((cs > -0.1) & (cs < 0.1))
-        cs_pair_num = 100
-        for idx in tqdm(range(dataset_length)):
-            example = dataset[idx]
-            tokens = model.to_tokens([example[text]], prepend_bos=True)
-            loss1, cache1 = model.run_with_cache_with_saes(
-                tokens, saes=sae, use_error_term=False
-            )
-            model.reset_saes()
-            if model_name == "pythia-70m-deduped":
-                prompt = f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
-            dim1 = cache1[prompt].shape[1]
-            for idy in range(cs_pair_num):
-                try:
-                    res1 = cache1[prompt][:, :, max_indices[0][idy]] > 1e-4
-                    res2 = cache1[prompt][:, :, max_indices[1][idy]] > 1e-4
-                    if res1.sum() == 0 and res2.sum() == 0:
-                        pass
-                    else:
-                        max_diffs[layer].append(
-                            ((res1 & res2).sum() / dim1).cpu().item()
-                        )
-                except:
-                    pass
-                try:
-                    res1 = cache1[prompt][:, :, min_indices[0][idy]] > 1e-4
-                    res2 = cache1[prompt][:, :, min_indices[1][idy]] > 1e-4
-                    if res1.sum() == 0 and res2.sum() == 0:
-                        pass
-                    else:
-                        min_diffs[layer].append(
-                            ((res1 & res2).sum() / dim1).cpu().item()
-                        )
-                except:
-                    pass
-                try:
-                    res1 = cache1[prompt][:, :, zero_indices[0][idy]] > 1e-4
-                    res2 = cache1[prompt][:, :, zero_indices[1][idy]] > 1e-4
-                    if res1.sum() == 0 and res2.sum() == 0:
-                        pass
-                    else:
-                        zero_diffs[layer].append(
-                            ((res1 & res2).sum() / dim1).cpu().item()
-                        )
-                except:
-                    pass
+    dataset_length = int(len(dataset) * ratio)
+    max_indices = [[[], []] for _ in range(len(saes))]
 
-        # TODO: plot the box plot here
-        # sns.boxplot(min_diffs)
-        # plt.title("Opposite cos sim vector frequency pattern Boxplot")
-        # sns.boxplot(max_diffs)
-        # plt.title("Nearly same cos sim vector frequency pattern Boxplot")
-        # sns.boxplot(zero_diffs)
-        # plt.title("Nearly Zero Cosine Similarity Pair Frequency Pattern")
-        return max_diffs, min_diffs, zero_diffs
+    for idx in tqdm(range(dataset_length)):
+        example = dataset[idx]
+        tokens = model.to_tokens([example[text]], prepend_bos=True)
+        loss1, cache1 = model.run_with_cache_with_saes(tokens, saes=saes)
+        model.reset_saes()
+        for layer in range(len(saes)):
+            cs = get_cosine_similarity(saes[layer].W_dec, saes[layer].W_dec).fill_diagonal_(-100).cpu()
+            max_indice = torch.where((cs > -0.1) & (cs < 0.1))
+            max_indices[layer][0].extend(max_indice[0][:300])
+            max_indices[layer][1].extend(max_indice[1][:300])
+            dim1, dim2 = len(max_indices[layer][0]), len(max_indices[layer][1])
+            max_cs_pair_num = min(dim1, dim2)
+            if model_name == "pythia-70m-deduped" or model_name == "gemma-2-2b":
+                prompt = f"blocks.{layer}.hook_resid_post.hook_sae_acts_post"
+            for idy in range(max_cs_pair_num):
+                res1 = cache1[prompt][:, :, max_indices[layer][0][idy]] > 1e-4
+                res2 = cache1[prompt][:, :, max_indices[layer][1][idy]] > 1e-4
+                if res1.sum() == 0 and res2.sum() == 0:
+                    pass
+                else:
+                    max_diffs[layer].append(
+                        ((res1 & res2).sum() / (res1 | res2).sum()).cpu().item()
+                    )
+    stats = {"layer": [], "max": [], "avg": [], "min": [], "25%": [], "75%": []}
+
+    for layer in range(26):
+        stats["layer"].append(layer)
+        stats["max"].append(max(max_diffs[layer]))
+        stats["avg"].append(sum(max_diffs[layer]) / len(max_diffs[layer]))
+        stats["min"].append(min(max_diffs[layer]))
+        stats["25%"].append(np.percentile(max_diffs[layer], 25))
+        stats["75%"].append(np.percentile(max_diffs[layer], 75))
+
+    df = pd.DataFrame(stats)
+    fig, ax = plt.subplots()
+    # sns.lineplot(data=df, x="layer", y="max", label="max", ax=ax)
+    sns.lineplot(data=df, x="layer", y="avg", label="avg", ax=ax)
+    # sns.lineplot(data=df, x="layer", y="min", label="min", ax=ax)
+    sns.lineplot(data=df, x="layer", y="25%", label="25%", ax=ax)
+    sns.lineplot(data=df, x="layer", y="75%", label="75%", ax=ax)
+    ax.set_title(f"Activation Statistics for {model_name}")
+    ax.set_xlabel("Layer")
+    ax.set_ylabel("Activation ratio")
+    plt.savefig(f"{model_name}_high_cs_activation_patterns.pdf")
+    return max_diffs, min_diffs, zero_diffs
 
 
 def name2lrc(name: str) -> Tuple[int, int, int]:

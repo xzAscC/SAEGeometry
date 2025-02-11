@@ -161,8 +161,6 @@ def get_cosine_similarity(
 
 
 
-
-
 def plot_cs(
     saes: List[sae_lens.SAE],
     model_name: str = "gemma2",
