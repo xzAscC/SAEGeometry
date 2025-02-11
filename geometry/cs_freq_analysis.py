@@ -68,6 +68,9 @@ def cs_freqPattern_comparsion(model_name: str, dataset_name: str):
         model.reset_saes()
         for layer in range(len(saes)):
             cs = get_cosine_similarity(saes[layer].W_dec, saes[layer].W_dec).fill_diagonal_(-100).cpu()
+            # max: 0.6
+            # min: -0.7
+            # zero: 0.001
             max_indice = torch.where((cs > -0.1) & (cs < 0.1))
             max_indices[layer][0].extend(max_indice[0][:300])
             max_indices[layer][1].extend(max_indice[1][:300])
@@ -105,7 +108,28 @@ def cs_freqPattern_comparsion(model_name: str, dataset_name: str):
     ax.set_xlabel("Layer")
     ax.set_ylabel("Activation ratio")
     plt.savefig(f"{model_name}_high_cs_activation_patterns.pdf")
-    return max_diffs, min_diffs, zero_diffs
+    
+    # plot encoder
+    cs = [[] for _ in range(26)]
+    for layer in range(len(saes)):
+        dim1, dim2 = len(max_indices[layer][0]), len(max_indices[layer][1])
+        max_cs_pair_num = min(dim1, dim2)
+        p = 2
+        dim = 1
+        normalized_enc = torch.nn.functional.normalize(saes[layer].W_enc, p=p, dim=dim)
+        for idy in range(max_cs_pair_num):
+            cosine_sim = torch.mm(normalized_enc[:, max_indices[layer][0][idy]].unsqueeze(0), normalized_enc[:, max_indices[layer][1][idy]].unsqueeze(1))
+            cs[layer].append(cosine_sim.cpu().item())
+    cs_df = pd.DataFrame({
+        "layer": np.repeat(range(26), [len(layer_cs) for layer_cs in cs]),
+        "cosine similarity": [item for sublist in cs for item in sublist]
+    })
+
+    sns.boxplot(data=cs_df, x="layer", y="cosine similarity")
+    plt.title("Cosine Similarity of Encoder Weights by Layer")
+    plt.show()
+    plt.savefig("zero_cosine_similarity_boxplot.pdf")
+    return None
 
 
 def name2lrc(name: str) -> Tuple[int, int, int]:
